@@ -54,9 +54,9 @@ class TelegramCommandHandler:
             response = self._handle_resume()
         elif command in ("/help", "/start", "帮助"):
             response = self._handle_help()
-        elif command in ("/add_passenger", "/passenger", "添加乘客", "增加乘客"):
+        elif command in ("/add_passenger", "/add_passengers", "/addpassenger", "/addpassengers", "/passenger", "添加乘客", "增加乘客", "加人"):
             response = self._handle_add_passenger(clean_text)
-        elif command in ("/passengers", "/passenger_list", "/list_passengers", "乘客列表", "乘客"):
+        elif command in ("/passengers", "/passenger_list", "/list_passengers", "乘客列表", "乘客", "查人"):
             response = self._handle_list_passengers()
         elif command in ("/clear_passengers", "清空乘客"):
             response = self._handle_clear_passengers()
@@ -93,15 +93,25 @@ class TelegramCommandHandler:
     def _handle_status(self) -> str:
         s = self.engine.get_status_summary()
         status_icon = "⏸️" if s["is_paused"] else "🟢"
+        if s["is_paused"]:
+            status_desc = "已暂停 (PAUSED)"
+        elif s["status"] in ("PENDING", "MONITORING"):
+            status_desc = "正在实时监控抢票中 (监测余票放票)"
+        else:
+            status_desc = s["status"]
+
         rt_info = "否"
         if s["is_round_trip"]:
             rt_info = f"是 (返程 {s['return_date']}, {s['return_time_window']})"
 
-        passengers_str = ", ".join(s["passengers"]) if s["passengers"] else "未指定"
+        passengers_list = []
+        for p in self.engine.task.passengers:
+            passengers_list.append(f"{p.name} (`{p.masked_id}`)")
+        passengers_str = ", ".join(passengers_list) if passengers_list else "未指定"
 
         return (
             f"🚄 *KTMB 抢票守护状态报告* 🚄\n\n"
-            f"• *运行状态*: {status_icon} {s['status']}\n"
+            f"• *运行状态*: {status_icon} {status_desc}\n"
             f"• *去程路线*: *{s['origin']}* ➡️ *{s['destination']}*\n"
             f"• *出发日期*: `{s['date']}`\n"
             f"• *出发时段*: {s['time_window']}\n"
@@ -220,7 +230,7 @@ class TelegramCommandHandler:
             self.engine.update_task(new_task)
 
             return (
-                f"✓ 已成功添加乘车人: *{new_passenger.name}* ({new_passenger.masked_id})！\n"
+                f"✓ 已成功添加乘车人: *{new_passenger.name}* (`{new_passenger.masked_id}`)！\n"
                 f"当前共 {len(new_passengers)} 位乘车人，锁定席位数已自动同步为 {len(new_passengers)}。"
             )
         except Exception as e:
@@ -234,7 +244,7 @@ class TelegramCommandHandler:
         lines = [f"👥 *当前预填乘车人列表 (共 {len(passengers)} 位)*:\n"]
         for idx, p in enumerate(passengers, start=1):
             gender_label = "男 (Male)" if p.gender.lower() in ("male", "m") else "女 (Female)"
-            lines.append(f"  {idx}. *{p.name}* ({p.masked_id}) | {gender_label} | {p.masked_phone}")
+            lines.append(f"  {idx}. *{p.name}* (`{p.masked_id}`) | {gender_label} | `{p.masked_phone}`")
         lines.append(f"\n💡 当前锁定席位数: `{self.engine.task.required_seats}`。发送 `/clear_passengers` 可一键清空。")
         return "\n".join(lines)
 

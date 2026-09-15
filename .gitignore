@@ -12,6 +12,7 @@ venv/
 .env
 .ktm_key
 *.key
+*.pem
 
 # Local SQLite databases (contain encrypted task logs)
 *.db

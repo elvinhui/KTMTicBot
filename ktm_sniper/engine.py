@@ -45,28 +45,31 @@ class KTMSniperEngine:
         self._outbound_result: Optional[Dict[str, Any]] = None
         self.is_paused: bool = False
         self.total_cycles: int = 0
+        self._browser_needs_update: bool = False
         self._lock = threading.Lock()
 
     def update_task(self, new_task: SniperTaskConfig):
         """
         Thread-safely hot-updates the target sniper task criteria.
+        Safe to call from background threads (e.g. TelegramCommandListener).
         """
         with self._lock:
             old_desc = f"{self.task.origin} -> {self.task.destination} ({self.task.date})"
+            route_changed = (
+                self.task.origin != new_task.origin or
+                self.task.destination != new_task.destination or
+                self.task.date != new_task.date
+            )
             self.task = new_task
             self.consecutive_errors = 0
+            if route_changed:
+                self._browser_needs_update = True
             if self.repository:
                 self.repository.save_task(new_task)
                 self.repository.log_event(
                     new_task.task_id,
                     f"Task updated from {old_desc} to {new_task.origin} -> {new_task.destination} ({new_task.date})"
                 )
-            if self.browser_driver:
-                try:
-                    self.browser_driver.fill_search_criteria(new_task)
-                    self.browser_driver.trigger_search()
-                except Exception as e:
-                    logger.warning(f"Failed to update browser criteria after remote task change: {e}")
 
     def get_status_summary(self) -> Dict[str, Any]:
         """
@@ -91,12 +94,23 @@ class KTMSniperEngine:
 
     def step(self) -> Optional[Dict[str, Any]]:
         """
-        Executes a single check-and-reserve evaluation cycle.
+        Executes a single check-and-reserve evaluation cycle in the main thread.
         """
         if self.repository:
             self.repository.update_task_status(self.task.task_id, TaskStatus.MONITORING)
 
         leg_label = "【去程】" if self.task.leg_type == "OUTBOUND" else ("【返程】" if self.task.leg_type == "RETURN" else "")
+
+        # 0. Sync browser criteria if hot-updated by background Telegram thread
+        if self._browser_needs_update and self.browser_driver:
+            with self._lock:
+                self._browser_needs_update = False
+                task_snapshot = self.task
+            try:
+                self.browser_driver.fill_search_criteria(task_snapshot)
+                self.browser_driver.trigger_search()
+            except Exception as e:
+                logger.warning(f"Failed to update browser criteria in main thread: {e}")
 
         # 1. Fetch available trips (via browser or checker)
         trips: List[TripInfo] = []
