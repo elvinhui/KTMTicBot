@@ -1,0 +1,22 @@
+[Unit]
+Description=KTMB (KITS) Ticket Sniper Daemon
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/ktm-sniper
+ExecStart=/home/ubuntu/ktm-sniper/venv/bin/python main.py
+Restart=always
+RestartSec=10
+Environment="PYTHONUNBUFFERED=1"
+Environment="KTM_HEADLESS=true"
+# Pass sensitive credentials safely via environment or .env
+EnvironmentFile=/home/ubuntu/ktm-sniper/.env
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

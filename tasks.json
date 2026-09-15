@@ -1,0 +1,25 @@
+{
+  "tasks": [
+    {
+      "origin": "Kulai",
+      "destination": "Penang",
+      "date": "2027-02-04",
+      "time_from": "07:00",
+      "time_to": "12:00",
+      "preferred_trains": ["EG9022", "EP9204"],
+      "preferred_classes": ["ETS Platinum", "ETS Gold"],
+      "seat_preference": "Window",
+      "required_seats": 1,
+      "auto_reserve": true,
+      "passengers": [
+        {
+          "name": "Tan Ah Kow",
+          "id_number": "920101-14-5566",
+          "gender": "Male",
+          "phone": "+60123456789",
+          "email": "tan@example.com"
+        }
+      ]
+    }
+  ]
+}

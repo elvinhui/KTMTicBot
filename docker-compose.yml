@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  ktm-sniper:
+    build: .
+    container_name: ktm_sniper_bot
+    restart: unless-stopped
+    environment:
+      - KTM_HEADLESS=true
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+      - KTM_PASSENGER_IC=${KTM_PASSENGER_IC}
+      - KTM_PASSENGER_PHONE=${KTM_PASSENGER_PHONE}
+      - KTM_DB_PATH=/app/data/ktm_sniper.db
+      - POLL_INTERVAL=4.5
+      - POLL_JITTER=1.5
+    volumes:
+      - ./tasks.json:/app/tasks.json:ro
+      - ./data:/app/data
+    ipc: host  # Recommended for Chromium in Docker to avoid /dev/shm OOM issues

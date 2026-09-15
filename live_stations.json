@@ -1,0 +1,446 @@
+[
+  {
+    "code": "44000",
+    "name": "ALOR SETAR"
+  },
+  {
+    "code": "44400",
+    "name": "ANAK BUKIT"
+  },
+  {
+    "code": "42400",
+    "name": "GURUN"
+  },
+  {
+    "code": "41400",
+    "name": "SUNGAI PETANI"
+  },
+  {
+    "code": "45800",
+    "name": "ARAU"
+  },
+  {
+    "code": "47300",
+    "name": "PADANG BESAR"
+  },
+  {
+    "code": "72700",
+    "name": "AUR GADING"
+  },
+  {
+    "code": "72200",
+    "name": "BUKIT BETONG"
+  },
+  {
+    "code": "73100",
+    "name": "CHEGAR PERAH"
+  },
+  {
+    "code": "67900",
+    "name": "JENDERAK"
+  },
+  {
+    "code": "68700",
+    "name": "JERANTUT"
+  },
+  {
+    "code": "63700",
+    "name": "KEMAYAN"
+  },
+  {
+    "code": "72400",
+    "name": "KG BERKAM"
+  },
+  {
+    "code": "70200",
+    "name": "KRAMBIT"
+  },
+  {
+    "code": "67400",
+    "name": "KUALA KRAU"
+  },
+  {
+    "code": "71300",
+    "name": "KUALA LIPIS"
+  },
+  {
+    "code": "69600",
+    "name": "MELA"
+  },
+  {
+    "code": "64900",
+    "name": "MENGKARAK"
+  },
+  {
+    "code": "66100",
+    "name": "MENTAKAB"
+  },
+  {
+    "code": "75000",
+    "name": "MENTARA BARU"
+  },
+  {
+    "code": "74800",
+    "name": "MERAPOH"
+  },
+  {
+    "code": "71800",
+    "name": "PADANG TUNGKU"
+  },
+  {
+    "code": "73500",
+    "name": "SUNGAI TEMAU"
+  },
+  {
+    "code": "74500",
+    "name": "TELUK GUNUNG"
+  },
+  {
+    "code": "64400",
+    "name": "TRIANG"
+  },
+  {
+    "code": "2600",
+    "name": "BAGAN SERAI"
+  },
+  {
+    "code": "9700",
+    "name": "BATU GAJAH"
+  },
+  {
+    "code": "14600",
+    "name": "BEHRANG"
+  },
+  {
+    "code": "9000",
+    "name": "IPOH"
+  },
+  {
+    "code": "10900",
+    "name": "KAMPAR"
+  },
+  {
+    "code": "6300",
+    "name": "KUALA KANGSAR"
+  },
+  {
+    "code": "5700",
+    "name": "PADANG RENGAS"
+  },
+  {
+    "code": "1900",
+    "name": "PARIT BUNTAR"
+  },
+  {
+    "code": "14100",
+    "name": "SLIM RIVER"
+  },
+  {
+    "code": "7300",
+    "name": "SUNGAI SIPUT"
+  },
+  {
+    "code": "12900",
+    "name": "SUNGKAI"
+  },
+  {
+    "code": "4700",
+    "name": "TAIPING"
+  },
+  {
+    "code": "15200",
+    "name": "TANJONG MALIM"
+  },
+  {
+    "code": "11600",
+    "name": "TAPAH ROAD"
+  },
+  {
+    "code": "61800",
+    "name": "BAHAU"
+  },
+  {
+    "code": "27800",
+    "name": "GEMAS"
+  },
+  {
+    "code": "21500",
+    "name": "NILAI"
+  },
+  {
+    "code": "23900",
+    "name": "REMBAU"
+  },
+  {
+    "code": "22700",
+    "name": "SEREMBAN"
+  },
+  {
+    "code": "16500",
+    "name": "BATANG KALI"
+  },
+  {
+    "code": "20400",
+    "name": "KAJANG"
+  },
+  {
+    "code": "54700",
+    "name": "KLANG"
+  },
+  {
+    "code": "KUL",
+    "name": "KLIA T1"
+  },
+  {
+    "code": "KL2",
+    "name": "KLIA T2"
+  },
+  {
+    "code": "16100",
+    "name": "KUALA KUBU BHARU"
+  },
+  {
+    "code": "PCS",
+    "name": "PUTRAJAYA & CYBERJAYA"
+  },
+  {
+    "code": "17800",
+    "name": "RAWANG"
+  },
+  {
+    "code": "STS",
+    "name": "SALAK TINGGI"
+  },
+  {
+    "code": "54200",
+    "name": "SHAH ALAM"
+  },
+  {
+    "code": "53700",
+    "name": "SUBANG JAYA"
+  },
+  {
+    "code": "18500",
+    "name": "SUNGAI BULOH"
+  },
+  {
+    "code": "26400",
+    "name": "BATANG MELAKA"
+  },
+  {
+    "code": "25100",
+    "name": "PULAU SEBANG/TAMPIN"
+  },
+  {
+    "code": "19600",
+    "name": "BDR TASEK SELATAN"
+  },
+  {
+    "code": "18400",
+    "name": "KEPONG SENTRAL"
+  },
+  {
+    "code": "19100",
+    "name": "KL SENTRAL"
+  },
+  {
+    "code": "19000",
+    "name": "KUALA LUMPUR"
+  },
+  {
+    "code": "31300",
+    "name": "BEKOK"
+  },
+  {
+    "code": "37500",
+    "name": "JB SENTRAL"
+  },
+  {
+    "code": "36900",
+    "name": "KEMPAS BARU"
+  },
+  {
+    "code": "33200",
+    "name": "KLUANG"
+  },
+  {
+    "code": "36000",
+    "name": "KULAI"
+  },
+  {
+    "code": "30500",
+    "name": "LABIS"
+  },
+  {
+    "code": "34800",
+    "name": "LAYANG LAYANG"
+  },
+  {
+    "code": "32100",
+    "name": "PALOH"
+  },
+  {
+    "code": "34200",
+    "name": "RENGAM"
+  },
+  {
+    "code": "29100",
+    "name": "SEGAMAT"
+  },
+  {
+    "code": "77900",
+    "name": "BERTAM"
+  },
+  {
+    "code": "77800",
+    "name": "BERTAM BARU"
+  },
+  {
+    "code": "80000",
+    "name": "BUKIT ABU"
+  },
+  {
+    "code": "84200",
+    "name": "BUKIT PANAU"
+  },
+  {
+    "code": "85500",
+    "name": "BUNUT SUSU"
+  },
+  {
+    "code": "84800",
+    "name": "CHICHA TINGGI"
+  },
+  {
+    "code": "79300",
+    "name": "DABONG"
+  },
+  {
+    "code": "76000",
+    "name": "GUA MUSANG"
+  },
+  {
+    "code": "78100",
+    "name": "JEREK BARU"
+  },
+  {
+    "code": "78900",
+    "name": "KEMUBU"
+  },
+  {
+    "code": "80300",
+    "name": "KG BARU BUKIT ABU"
+  },
+  {
+    "code": "86000",
+    "name": "KG KOK PASIR"
+  },
+  {
+    "code": "77000",
+    "name": "KG. SIRIAN"
+  },
+  {
+    "code": "82100",
+    "name": "KRAI"
+  },
+  {
+    "code": "79800",
+    "name": "KUALA GRIS"
+  },
+  {
+    "code": "77400",
+    "name": "LIMAU KASTURI"
+  },
+  {
+    "code": "81200",
+    "name": "MANEK URAI"
+  },
+  {
+    "code": "81700",
+    "name": "PAHI"
+  },
+  {
+    "code": "76600",
+    "name": "PAN MALAYAN"
+  },
+  {
+    "code": "85100",
+    "name": "PASIR MAS"
+  },
+  {
+    "code": "80700",
+    "name": "SG MENGKUANG BARU"
+  },
+  {
+    "code": "78400",
+    "name": "SRI BINTANG"
+  },
+  {
+    "code": "78700",
+    "name": "SRI JAYA"
+  },
+  {
+    "code": "78500",
+    "name": "SRI MAHLIGAI"
+  },
+  {
+    "code": "84400",
+    "name": "SUNGAI KELADI"
+  },
+  {
+    "code": "82400",
+    "name": "SUNGAI NAL"
+  },
+  {
+    "code": "77200",
+    "name": "SUNGAI SIRIAN"
+  },
+  {
+    "code": "78300",
+    "name": "SUNGAI TASIN"
+  },
+  {
+    "code": "83700",
+    "name": "TANAH MERAH"
+  },
+  {
+    "code": "83100",
+    "name": "TEMANGAN"
+  },
+  {
+    "code": "84600",
+    "name": "TO UBAN"
+  },
+  {
+    "code": "86300",
+    "name": "TUMPAT"
+  },
+  {
+    "code": "80500",
+    "name": "ULU TEMIANG"
+  },
+  {
+    "code": "85700",
+    "name": "WAKAF BHARU"
+  },
+  {
+    "code": "600",
+    "name": "BUKIT MERTAJAM"
+  },
+  {
+    "code": "100",
+    "name": "BUTTERWORTH"
+  },
+  {
+    "code": "1700",
+    "name": "NIBONG TEBAL"
+  },
+  {
+    "code": "40500",
+    "name": "TASEK GELUGOR"
+  },
+  {
+    "code": "91000",
+    "name": "HAT YAI"
+  }
+]

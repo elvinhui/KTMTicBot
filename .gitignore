@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+
+# Environment and sensitive keys
+.env
+.ktm_key
+*.key
+
+# Local SQLite databases (contain encrypted task logs)
+*.db
+*.sqlite3
+ktm_sniper.db
+data/
+
+# Playwright screenshots and test artifacts
+*.png
+*.jpg
+.pytest_cache/
+.coverage
+htmlcov/
