@@ -255,15 +255,27 @@ class KTMSniperEngine:
                         continue
                     elif self._outbound_result is not None:
                         logger.info(f"🎉 返程车票锁定成功 ({result.get('booking_id')})！往返双程车票均已全部锁定！")
-                        return {
-                            "status": "SUCCESS",
-                            "is_round_trip": True,
-                            "outbound": self._outbound_result,
-                            "return": result
-                        }
+                        if self.max_cycles is not None:
+                            return {
+                                "status": "SUCCESS",
+                                "is_round_trip": True,
+                                "outbound": self._outbound_result,
+                                "return": result
+                            }
+                        self.is_paused = True
+                        logger.info("⏸️ 双程车票均已锁定！守护已自动挂起为 PAUSED。")
+                        while self.is_paused:
+                            time.sleep(3)
+                        continue
                     else:
-                        logger.info("Seat secured successfully!")
-                        return result
+                        logger.info(f"🎉 车票已成功锁定 ({result.get('booking_id')})！已发送 Telegram 付款直达链接！")
+                        if self.max_cycles is not None:
+                            return result
+                        self.is_paused = True
+                        logger.info("⏸️ 车票已成功锁定！守护引擎已自动挂起为 PAUSED，等待用户完成付款。发送 /resume 可随时开启下一轮守护。")
+                        while self.is_paused:
+                            time.sleep(3)
+                        continue
                 self.consecutive_errors = 0
             except CircuitBreakerOpenException as e:
                 logger.warning(f"Circuit breaker open: {e}. Backing off.")

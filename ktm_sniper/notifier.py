@@ -24,29 +24,36 @@ class TelegramTicketNotifier:
         raw_id: str,
         passengers: Optional[Any] = None
     ) -> str:
-        payment_url = f"https://online.ktmb.com.my/v2/payment/checkout?bookingId={booking_id}"
-        
+        checkout_url = f"https://online.ktmb.com.my/v2/payment/checkout?bookingId={booking_id}"
+        history_url = "https://online.ktmb.com.my/Ticket/BookingHistory"
+
         if passengers and len(passengers) > 1:
             lines = []
             for idx, p in enumerate(passengers, 1):
                 p_name = getattr(p, "name", p.get("name") if isinstance(p, dict) else str(p))
                 p_id = getattr(p, "id_number", p.get("id_number") if isinstance(p, dict) else "")
                 lines.append(f"  {idx}. {p_name} ({self.mask_sensitive_data(str(p_id))})")
-            passenger_block = f"• *Passengers* ({len(passengers)}):\n" + "\n".join(lines)
+            passenger_block = f"• *乘车人名单* ({len(passengers)}人):\n" + "\n".join(lines)
         else:
             masked_id = self.mask_sensitive_data(raw_id)
-            passenger_block = f"• *Passenger*: {passenger_name} ({masked_id})"
+            passenger_block = f"• *乘车人*: {passenger_name} (`{masked_id}`)"
+
+        train_label = trip_details.get('train_no', 'N/A')
+        class_label = trip_details.get('class', trip_details.get('train_class', 'N/A'))
 
         message = (
-            f"🚨 *KTM Ticket Sniper Alert* 🚨\n\n"
-            f"✅ *Seat Successfully Reserved!*\n"
-            f"• *Booking ID*: `{booking_id}`\n"
-            f"• *Train*: {trip_details.get('train_no', 'N/A')} ({trip_details.get('class', trip_details.get('train_class', 'N/A'))})\n"
-            f"• *Route*: {trip_details.get('origin', 'N/A')} ➡️ {trip_details.get('destination', 'N/A')}\n"
-            f"• *Departure*: {trip_details.get('departure_time', 'N/A')}\n"
+            f"🚨 *【KTMB 抢票成功通知】* 🚨\n\n"
+            f"🎉 *席位已成功锁定！请在 15 分钟内完成支付* 🎉\n\n"
+            f"• *订单编号*: `{booking_id}`\n"
+            f"• *车次等级*: *{train_label}* ({class_label})\n"
+            f"• *车程路线*: *{trip_details.get('origin', 'N/A')}* ➡️ *{trip_details.get('destination', 'N/A')}*\n"
+            f"• *发车时间*: `{trip_details.get('departure_time', 'N/A')}`\n"
             f"{passenger_block}\n\n"
-            f"⏳ *Action Required*: You have 15 minutes to complete the payment.\n"
-            f"🔗 [Click Here to Pay via KITS Gateway]({payment_url})"
+            f"⏳ *支付时限*: 官方倒计时 *15 分钟*（超时席位将被自动释放）\n\n"
+            f"👉 *点击下方链接立即还款付款*:\n"
+            f"🔗 [立即前往 KTMB 官方结账付款]({checkout_url})\n"
+            f"📋 [查看待支付订单列表]({history_url})\n\n"
+            f"💡 *提示*: 您也可以直接打开手机【KTMB App】➡️ 点击底部【My Tickets】直接拉起 FPX / 银行卡支付！"
         )
         return message
 
@@ -58,36 +65,49 @@ class TelegramTicketNotifier:
         raw_id: str,
         passengers: Optional[Any] = None
     ) -> bool:
-        text = self.format_message(booking_id, trip_details, passenger_name, raw_id, passengers=passengers)
-        payload = {
-            "chat_id": self.chat_id,
-            "text": text,
-            "parse_mode": "Markdown"
-        }
-
+        message = self.format_message(booking_id, trip_details, passenger_name, raw_id, passengers)
+        
         if self.session is None:
+            logger.info(f"Notification alert (dry-run):\n{message}")
             return True
 
         url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
-        response = self.session.post(url, json=payload)
-        return response.status_code == 200
-
-    def send_photo_alert(self, photo_path: str, caption: str = "") -> bool:
-        """
-        Sends a visual screenshot alert to the user's Telegram chat.
-        """
-        if not os.path.exists(photo_path):
+        payload = {
+            "chat_id": self.chat_id,
+            "text": message,
+            "parse_mode": "Markdown"
+        }
+        try:
+            response = self.session.post(url, json=payload)
+            if response.status_code != 200:
+                logger.error(f"Telegram send_alert failed: HTTP {response.status_code} - {response.text}")
+                # Fallback without markdown if markdown parsing failed
+                payload["parse_mode"] = ""
+                response = self.session.post(url, json=payload)
+            return response.status_code == 200
+        except Exception as e:
+            logger.error(f"Telegram send_alert exception: {e}")
             return False
 
+    def send_photo_alert(self, photo_path: str, caption: str) -> bool:
         if self.session is None:
+            logger.info(f"Photo alert (dry-run): {photo_path}\nCaption: {caption}")
             return True
 
         url = f"https://api.telegram.org/bot{self.bot_token}/sendPhoto"
-        with open(photo_path, "rb") as photo_file:
-            files = {"photo": photo_file}
-            data = {"chat_id": self.chat_id, "caption": caption, "parse_mode": "Markdown"}
-            response = self.session.post(url, data=data, files=files)
-            return response.status_code == 200
+        try:
+            with open(photo_path, "rb") as photo:
+                files = {"photo": photo}
+                data = {"chat_id": self.chat_id, "caption": caption, "parse_mode": "Markdown"}
+                response = self.session.post(url, data=data, files=files)
+                if response.status_code != 200:
+                    logger.error(f"Telegram send_photo_alert failed: HTTP {response.status_code} - {response.text}")
+                    # Fallback to plain text message if photo markdown failed
+                    self.send_raw_message(caption, parse_mode="")
+                return response.status_code == 200
+        except Exception as e:
+            logger.error(f"Telegram send_photo_alert exception: {e}")
+            return False
 
     def send_raw_message(self, text: str, parse_mode: str = "Markdown") -> bool:
         """
@@ -96,12 +116,17 @@ class TelegramTicketNotifier:
         payload = {
             "chat_id": self.chat_id,
             "text": text,
-            "parse_mode": parse_mode
         }
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
 
         if self.session is None:
             return True
 
         url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
-        response = self.session.post(url, json=payload)
-        return response.status_code == 200
+        try:
+            response = self.session.post(url, json=payload)
+            return response.status_code == 200
+        except Exception as e:
+            logger.error(f"Telegram send_raw_message exception: {e}")
+            return False

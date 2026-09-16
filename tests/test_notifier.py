@@ -29,6 +29,7 @@ def test_telegram_notifier_formatting():
     assert "EG9022" in message
     assert "95050510****" in message
     assert "checkout?bookingId=KITS-998811" in message
+    assert "BookingHistory" in message
     assert "950505105544" not in message
 
 def test_telegram_notifier_multi_passenger_formatting():
@@ -52,7 +53,7 @@ def test_telegram_notifier_multi_passenger_formatting():
         passengers=[p1, p2]
     )
 
-    assert "*Passengers* (2):" in msg
+    assert "乘车人名单" in msg
     assert "Alice Smith (910101-14-****)" in msg
     assert "Bob Smith (920202-14-****)" in msg
     assert "910101-14-1122" not in msg
