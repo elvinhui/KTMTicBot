@@ -133,3 +133,29 @@
   3. 若启动了无头浏览器，自动触发 `fill_search_criteria` 填入返程日期与反转路线；
   4. 轮询循环不中断，无缝继续监控返程票，直至双程全部锁定后汇总返回完整结果。
 
+---
+
+### 10. KITS 登录认证 — CSRF Token 与 Cookie 绑定、Session 过期检测
+
+* **问题现象 (Root Cause)**：
+  KTMB KITS 登录页面 (`/Account/Login`) 使用 ASP.NET Core 的 `__RequestVerificationToken` 进行 CSRF 防护。该 Token 与当前 Session Cookie 绑定，如果直接使用裸 API POST 发送登录请求（携带从其他请求提取的 Token），会因为 Cookie 不匹配而被 403 拒绝。此外，登录成功后 KITS 依赖服务端 Session Cookie 维持认证状态，长时间轮询后 Session 可能过期导致后续预定请求失败。
+
+* **已验证解决方案 (Verified Solution)**：
+  1. **通过 Playwright 浏览器执行登录**：而非裸 HTTP 请求。浏览器自动处理 Cookie 与 CSRF Token 的绑定关系，填写 `#Email` 和 `#Password` 后点击 `#LoginButton`，完全模拟真人操作。
+  2. **登录状态验证**：通过检测导航栏中 "Login / sign up" 链接的存在/消失来判断是否已认证。
+  3. **Session 过期自动重连**：在 `KTMSniperEngine` 的轮询循环中，每 10 轮执行一次 `browser_driver.is_logged_in()` 检查。若检测到 Session 失效，调用 `authenticator.ensure_authenticated()` 自动重新登录。
+  4. **重试与告警**：登录失败时最多重试 3 次（递增延迟），全部失败后通过 Telegram 推送告警通知用户检查凭证。
+
+---
+
+### 11. KITS 单会话排他限制 ("Not allow multiple login")
+
+* **问题现象 (Root Cause)**：
+  KTMB KITS 线上系统严格执行单设备/单会话排他策略。若用户在个人电脑浏览器、手机 App 或其他终端已登录该账号且未显式退出（Sign out），机器人尝试登录时会被服务端拦截并弹窗报错：
+  `"Not allow multiple login. Please use \"Forget Password\" if you are unable to login."`。
+* **已验证解决方案 (Verified Solution)**：
+  1. **人工前置登出**：在启动抢票机器人前，必须在个人浏览器或手机端点击「Log Out / 退出登录」，释放服务端绑定的 Active Session。
+  2. **精准错误捕获与提示**：在 `KTMAuthenticator` 捕获到 `"Not allow multiple login"` 弹窗文字时，在日志中向用户明确提示：「检测到账号在其他设备已登录，请先在浏览器/手机登出后再运行」。
+  3. **忘记密码强制重置踢出会话**：若服务端 Session 挂起或被锁死，通过官方忘记密码流程（`/Account/ForgetPassword`）重置密码，KTMB 服务端会立即强制踢除所有挂起会话并解锁。
+  4. **机器人关闭时优雅登出**：在 `main.py` 的 `finally:` 块中通过 `authenticator.logout()` 访问 `/Account/Logout`，确保每次守护退出时均显式释放服务端会话，保障下次启动无缝登录。
+

@@ -28,5 +28,8 @@ class Settings:
     DEFAULT_JITTER: float = float(os.getenv("POLL_JITTER", "1.5"))
     CIRCUIT_BREAKER_FAILURES: int = int(os.getenv("CB_FAILURE_THRESHOLD", "3"))
     CIRCUIT_BREAKER_TIMEOUT: float = float(os.getenv("CB_RECOVERY_TIMEOUT", "15.0"))
+    # KTMB KITS Login Credentials
+    KTM_EMAIL: str = os.getenv("KTM_EMAIL", "")
+    KTM_PASSWORD: str = os.getenv("KTM_PASSWORD", "")
 
 settings = Settings()

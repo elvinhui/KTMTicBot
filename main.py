@@ -29,6 +29,7 @@ from ktm_sniper.browser.driver import KTMBrowserDriver
 from ktm_sniper.storage import TaskRepository
 from ktm_sniper.engine import KTMSniperEngine
 from ktm_sniper.config import settings
+from ktm_sniper.auth import KTMAuthenticator
 
 logging.basicConfig(
     level=logging.INFO,
@@ -366,12 +367,31 @@ def main():
 
     browser_driver = None
     browser_manager = None
+    authenticator = None
     if not args.no_browser:
         try:
             logger.info("正在初始化 Playwright Stealth 无头浏览器...")
             browser_manager = BrowserManager(headless=args.headless)
             page = browser_manager.start()
             browser_driver = KTMBrowserDriver(page=page)
+
+            # --- 登录认证 ---
+            if settings.KTM_EMAIL and settings.KTM_PASSWORD:
+                authenticator = KTMAuthenticator(
+                    email=settings.KTM_EMAIL,
+                    password=settings.KTM_PASSWORD,
+                )
+                login_success = authenticator.ensure_authenticated(
+                    page=page,
+                    notifier=notifier,
+                )
+                if login_success:
+                    logger.info("✅ KITS 账号登录成功，已获取认证 Session！")
+                else:
+                    logger.warning("⚠️ KITS 登录失败，将以游客模式继续运行（仅能搜索，无法预定）。")
+            else:
+                logger.warning("⚠️ 未配置 KTM_EMAIL/KTM_PASSWORD，将以游客模式运行（仅能搜索，无法预定）。")
+
             logger.info("无头浏览器已就绪，正在预热加载 KITS 页面...")
             browser_driver.navigate_to_booking()
             browser_driver.fill_search_criteria(task_config)
@@ -384,6 +404,7 @@ def main():
         notifier=notifier,
         repository=repo,
         browser_driver=browser_driver,
+        authenticator=authenticator,
         max_cycles=args.max_cycles
     )
 
@@ -410,6 +431,11 @@ def main():
     finally:
         if tg_listener:
             tg_listener.stop()
+        if authenticator and browser_manager and browser_manager.page:
+            try:
+                authenticator.logout(browser_manager.page)
+            except Exception:
+                pass
         if browser_manager:
             browser_manager.close()
 

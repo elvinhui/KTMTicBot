@@ -19,6 +19,8 @@ class KTMSniperEngine:
     Main coordinator engine running the monitoring, jitter polling,
     seat reservation, and Telegram alerting loop.
     """
+    SESSION_CHECK_INTERVAL = 10  # Check login state every N cycles
+
     def __init__(
         self,
         task: SniperTaskConfig,
@@ -28,6 +30,7 @@ class KTMSniperEngine:
         notifier: Optional[TelegramTicketNotifier] = None,
         repository: Optional[TaskRepository] = None,
         browser_driver: Optional[KTMBrowserDriver] = None,
+        authenticator=None,
         max_cycles: Optional[int] = None
     ):
         self.task = task
@@ -40,6 +43,7 @@ class KTMSniperEngine:
         self.notifier = notifier
         self.repository = repository
         self.browser_driver = browser_driver
+        self.authenticator = authenticator
         self.max_cycles = max_cycles
         self.consecutive_errors = 0
         self._outbound_result: Optional[Dict[str, Any]] = None
@@ -111,6 +115,23 @@ class KTMSniperEngine:
                 self.browser_driver.trigger_search()
             except Exception as e:
                 logger.warning(f"Failed to update browser criteria in main thread: {e}")
+
+        # 0b. Periodic session health check — re-authenticate if session expired
+        if (self.authenticator and self.browser_driver
+                and self.total_cycles > 0
+                and self.total_cycles % self.SESSION_CHECK_INTERVAL == 0):
+            try:
+                if not self.browser_driver.is_logged_in():
+                    logger.warning("⚠️ KITS Session 已过期，正在自动重新登录...")
+                    self.authenticator.ensure_authenticated(
+                        page=self.browser_driver.page,
+                        notifier=self.notifier,
+                    )
+                    # Re-navigate to booking page after re-login
+                    self.browser_driver.navigate_to_booking()
+                    self.browser_driver.fill_search_criteria(self.task)
+            except Exception as e:
+                logger.warning(f"Session re-auth check failed: {e}")
 
         # 1. Fetch available trips (via browser or checker)
         trips: List[TripInfo] = []

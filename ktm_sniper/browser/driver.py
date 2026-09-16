@@ -117,27 +117,45 @@ class KTMBrowserDriver:
                 pass
 
         # 3. Fill Travel Date
+        # 3. Fill Travel Date
         try:
-            # Format date for KITS if needed (DD/MM/YYYY or YYYY-MM-DD)
-            date_parts = config.date.split("-")
-            formatted_date = f"{date_parts[2]}/{date_parts[1]}/{date_parts[0]}" if len(date_parts) == 3 else config.date
+            # Format date for KITS: "D MMM YYYY" (e.g., "18 Sep 2026") or YYYY-MM-DD
+            from datetime import datetime
+            dt = datetime.strptime(config.date, "%Y-%m-%d")
+            formatted_date = dt.strftime("%d %b %Y").lstrip("0")  # e.g. "18 Sep 2026"
 
-            if self.page.locator("#OnwardDate").first.count() > 0:
-                self.page.fill("#OnwardDate", formatted_date, timeout=2000)
-            else:
-                self.page.fill("input[type='date'], input#departDate, input[name*='departDate']", config.date, timeout=2000)
+            self.page.evaluate(f"""
+                () => {{
+                    const d = document.getElementById('OnwardDate');
+                    if (d) {{
+                        d.removeAttribute('readonly');
+                        d.value = '{formatted_date}';
+                        if (window.$) $(d).val('{formatted_date}').trigger('change');
+                    }}
+                }}
+            """)
         except Exception:
-            pass
+            try:
+                self.page.fill("input[type='date'], input#departDate, input[name*='departDate']", config.date, timeout=2000)
+            except Exception:
+                pass
 
         # 3b. Fill Return Date if Round Trip
         if config.is_round_trip and config.return_date:
             try:
-                ret_parts = config.return_date.split("-")
-                formatted_ret = f"{ret_parts[2]}/{ret_parts[1]}/{ret_parts[0]}" if len(ret_parts) == 3 else config.return_date
-                if self.page.locator("#ReturnDate").first.count() > 0:
-                    self.page.fill("#ReturnDate", formatted_ret, timeout=2000)
-                else:
-                    self.page.fill("input#returnDate, input[name*='returnDate']", config.return_date, timeout=2000)
+                from datetime import datetime
+                ret_dt = datetime.strptime(config.return_date, "%Y-%m-%d")
+                formatted_ret = ret_dt.strftime("%d %b %Y").lstrip("0")
+                self.page.evaluate(f"""
+                    () => {{
+                        const rd = document.getElementById('ReturnDate');
+                        if (rd) {{
+                            rd.removeAttribute('readonly');
+                            rd.value = '{formatted_ret}';
+                            if (window.$) $(rd).val('{formatted_ret}').trigger('change');
+                        }}
+                    }}
+                """)
             except Exception:
                 pass
 
@@ -151,8 +169,24 @@ class KTMBrowserDriver:
     def trigger_search(self):
         self.dismiss_modals()
         try:
-            btn = self.page.locator("#btnSubmit, button:has-text('Search'), button:has-text('SEARCH'), button[type='submit']").first
-            btn.click(timeout=3000)
+            # Prefer KITS native SearchTrip function if present on window
+            triggered = self.page.evaluate("""
+                () => {
+                    if (typeof window.SearchTrip === 'function') {
+                        window.SearchTrip();
+                        return true;
+                    }
+                    return false;
+                }
+            """)
+            if not triggered:
+                btn = self.page.locator("#btnSubmit, button:has-text('Search'), button:has-text('SEARCH'), button[type='submit']").first
+                btn.click(timeout=3000)
+
+            try:
+                self.page.wait_for_url("**/Trip**", timeout=15000)
+            except Exception:
+                pass
             self.page.wait_for_load_state("networkidle", timeout=10000)
         except Exception:
             pass
@@ -160,10 +194,57 @@ class KTMBrowserDriver:
     def scrape_trips(self) -> List[TripInfo]:
         """
         Scrapes train cards and availability from the current page DOM.
+        Handles both KITS table layout (/Trip) and card/grid layouts.
         """
         raw_trips = self.page.evaluate("""
             () => {
                 const results = [];
+
+                // 1. Table-based parsing (KITS /Trip page)
+                const tables = document.querySelectorAll('table');
+                tables.forEach(tbl => {
+                    const rows = tbl.querySelectorAll('tr');
+                    rows.forEach(r => {
+                        const cells = r.querySelectorAll('td');
+                        if (cells.length >= 6) {
+                            const serviceText = (cells[0]?.innerText || '').trim();
+                            const depTime = (cells[1]?.innerText || '').trim();
+                            const arrTime = (cells[2]?.innerText || '').trim();
+                            const seatsText = (cells[4]?.innerText || '').trim();
+                            const fareText = (cells[5]?.innerText || '').trim();
+
+                            // Train service is typically "Platinum - 9124" or "Gold - 9352"
+                            let trainClass = 'ETS Gold';
+                            let trainNo = serviceText;
+                            if (serviceText.includes(' - ')) {
+                                const parts = serviceText.split(' - ');
+                                trainClass = parts[0].trim();
+                                trainNo = parts[1].trim();
+                            }
+
+                            const seats = parseInt(seatsText.replace(/[^0-9]/g, '')) || 0;
+                            const fare = parseFloat(fareText.replace(/[^0-9.]/g, '')) || 0.0;
+
+                            if (depTime.includes(':')) {
+                                results.push({
+                                    train_no: trainNo,
+                                    train_class: trainClass,
+                                    origin: '',
+                                    destination: '',
+                                    departure_time: depTime,
+                                    arrival_time: arrTime,
+                                    available_seats: seats,
+                                    fare: fare,
+                                    trip_id: trainNo
+                                });
+                            }
+                        }
+                    });
+                });
+
+                if (results.length > 0) return results;
+
+                // 2. Fallback to card / flex-row layout
                 const cards = document.querySelectorAll('.trip-card, .train-row, [data-train-no], tr[data-trip]');
                 cards.forEach(c => {
                     const trainNo = c.getAttribute('data-train-no') || c.querySelector('.train-no, .train-name')?.innerText || 'ETS';
@@ -210,3 +291,23 @@ class KTMBrowserDriver:
     def take_screenshot(self, output_path: str, full_page: bool = True) -> str:
         self.page.screenshot(path=output_path, full_page=full_page)
         return output_path
+
+    def is_logged_in(self) -> bool:
+        """
+        Checks whether the current browser session is authenticated by
+        inspecting the navbar for 'Login / sign up' vs. user profile state.
+        """
+        if not self.page.url or self.page.url == "about:blank" or not self.page.url.startswith("http"):
+            return False
+        if "/Account/Login" in self.page.url:
+            return False
+        try:
+            nav = self.page.locator("nav.navbar")
+            if nav.count() == 0 or not nav.first.is_visible(timeout=2000):
+                return False
+            login_link = self.page.locator("a.nav-link:has-text('Login / sign up')")
+            if login_link.count() > 0 and login_link.first.is_visible(timeout=2000):
+                return False
+            return True
+        except Exception:
+            return False

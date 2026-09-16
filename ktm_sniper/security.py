@@ -65,14 +65,23 @@ def mask_sensitive_dict(data: Any) -> Any:
     (id_number, ic, passport, phone, mobile, token, secret, password).
     Adheres strictly to immutability.
     """
-    sensitive_ic_keys = {"id_number", "ic", "passport", "token", "password", "secret", "mykad"}
+    sensitive_ic_keys = {"id_number", "ic", "passport", "token", "password", "secret", "mykad", "passwd", "pwd"}
     sensitive_phone_keys = {"phone", "mobile", "tel", "contact"}
+    sensitive_email_keys = {"email", "mail", "username", "login"}
 
     if isinstance(data, dict):
         new_dict = {}
         for k, v in data.items():
             k_lower = k.lower()
-            if any(s_key in k_lower for s_key in sensitive_phone_keys):
+            if any(s_key in k_lower for s_key in sensitive_email_keys):
+                val = str(v)
+                if "@" in val:
+                    local, domain = val.rsplit("@", 1)
+                    masked = f"{local[:3]}****@{domain}" if len(local) > 3 else f"{local[0]}****@{domain}"
+                    new_dict[k] = masked
+                else:
+                    new_dict[k] = mask_ic(val)
+            elif any(s_key in k_lower for s_key in sensitive_phone_keys):
                 new_dict[k] = mask_phone(str(v))
             elif any(s_key in k_lower for s_key in sensitive_ic_keys):
                 new_dict[k] = mask_ic(str(v))

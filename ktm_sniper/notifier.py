@@ -88,3 +88,20 @@ class TelegramTicketNotifier:
             data = {"chat_id": self.chat_id, "caption": caption, "parse_mode": "Markdown"}
             response = self.session.post(url, data=data, files=files)
             return response.status_code == 200
+
+    def send_raw_message(self, text: str, parse_mode: str = "Markdown") -> bool:
+        """
+        Sends an arbitrary text message to Telegram (used for login alerts, system events, etc.).
+        """
+        payload = {
+            "chat_id": self.chat_id,
+            "text": text,
+            "parse_mode": parse_mode
+        }
+
+        if self.session is None:
+            return True
+
+        url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
+        response = self.session.post(url, json=payload)
+        return response.status_code == 200

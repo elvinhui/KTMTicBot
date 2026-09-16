@@ -6,13 +6,18 @@
 [![Playwright](https://img.shields.io/badge/Playwright-Chromium-green.svg)](https://playwright.dev/)
 [![Telegram Bot](https://img.shields.io/badge/Telegram-Bot%20Remote%20Control-blue.svg)](https://core.telegram.org/bots)
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ED.svg)](https://www.docker.com/)
-[![Tests](https://img.shields.io/badge/Tests-87%20Passed%20(83%25%20cov)-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/Tests-109%20Passed%20(82%25%20cov)-brightgreen.svg)]()
 [![Security](https://img.shields.io/badge/Security-AES%20Encrypted%20%26%20PII%20Masked-success.svg)]()
 
 ---
 
 ## ✨ Features
 
+- **🔐 Automated KITS Login Authentication**:
+  - Browser-based login via Playwright simulating real user interaction.
+  - Automatic CSRF Token handling (ASP.NET `__RequestVerificationToken`).
+  - Session expiry detection with auto-re-login during long polling loops.
+  - Retry logic with exponential backoff and Telegram failure alerts.
 - **⚡ Adaptive Polling with Gaussian Jitter**: Intelligently polls KTMB KITS endpoints with dynamic backoff, randomized jitter, and circuit breaker protection against rate-limiting or anti-bot blocks.
 - **🔄 Full Round-Trip (往返双程) Lifecycle Automation**: Outbound and return journey auto-orchestration. When the outbound seat is reserved, it seamlessly transitions into tracking and booking the return leg.
 - **🚉 Intelligent Station Resolver (`prompt_station`)**:
@@ -79,6 +84,11 @@ cp .env.example .env
 ```
 Edit `.env`:
 ```ini
+# KTMB KITS Login (Required for booking)
+KTM_EMAIL=your_ktmb_email@example.com
+KTM_PASSWORD=your_ktmb_password
+
+# Telegram Bot
 TELEGRAM_BOT_TOKEN=your_bot_token_here
 TELEGRAM_CHAT_ID=your_chat_id_here
 KTM_DB_PATH=data/ktm_sniper.db
@@ -125,7 +135,7 @@ Run full test suite with coverage report:
 ```bash
 python -m pytest --cov=ktm_sniper
 ```
-All **87 automated tests** pass with **83%+ coverage**.
+All **109 automated tests** pass with **82%+ coverage**.
 
 ---
 

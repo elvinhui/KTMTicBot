@@ -7,5 +7,6 @@ __version__ = "2.0.0"
 from ktm_sniper.models import SniperTaskConfig, Passenger, TripInfo, TaskStatus
 from ktm_sniper.engine import KTMSniperEngine
 from ktm_sniper.stations import KTMStationRegistry
+from ktm_sniper.auth import KTMAuthenticator
 from ktm_sniper.telegram_bot import TelegramCommandHandler, TelegramCommandListener
 
