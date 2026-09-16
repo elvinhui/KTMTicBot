@@ -109,17 +109,22 @@ class TelegramCommandHandler:
             passengers_list.append(f"{p.name} (`{p.masked_id}`)")
         passengers_str = ", ".join(passengers_list) if passengers_list else "未指定"
 
+        trains_filter = ", ".join(self.engine.task.preferred_trains) if self.engine.task.preferred_trains else "不限 (全时段车次)"
+        classes_filter = ", ".join(self.engine.task.preferred_classes) if self.engine.task.preferred_classes else "不限 (全席别)"
+
         return (
             f"🚄 *KTMB 抢票守护状态报告* 🚄\n\n"
             f"• *运行状态*: {status_icon} {status_desc}\n"
             f"• *去程路线*: *{s['origin']}* ➡️ *{s['destination']}*\n"
             f"• *出发日期*: `{s['date']}`\n"
             f"• *出发时段*: {s['time_window']}\n"
+            f"• *车次偏好*: `{trains_filter}`\n"
+            f"• *车型席别*: `{classes_filter}`\n"
             f"• *双程往返*: {rt_info}\n"
             f"• *已轮询周期*: {s['total_cycles']} 次\n"
             f"• *乘车人*: {passengers_str}\n"
             f"• *数据存储*: SQLite (脱敏与加密守护已开启)\n\n"
-            f"💡 发送 `/set` 可实时更改行程信息。"
+            f"💡 发送 `/set trains any` 可取消车次限定；发送 `/set time 00:00-23:59` 监控全天车次。"
         )
 
     def _handle_pause(self) -> str:
@@ -191,8 +196,30 @@ class TelegramCommandHandler:
                 self.engine.update_task(new_task)
                 return f"✓ 锁定席位数已更新为: *{seats}*"
 
+            elif field in ("train", "trains", "车次", "车次偏好"):
+                if value.lower() in ("any", "all", "none", "clear", "所有", "不限", "0"):
+                    new_trains = []
+                    msg = "✓ 车次筛选已清除，将监控时段内的*所有车次*！"
+                else:
+                    new_trains = [t.strip().upper() for t in re.split(r"[, ]+", value) if t.strip()]
+                    msg = f"✓ 目标车次已更新为: *{', '.join(new_trains)}*"
+                new_task = dataclasses.replace(current_task, preferred_trains=new_trains)
+                self.engine.update_task(new_task)
+                return msg
+
+            elif field in ("class", "classes", "等级", "车型"):
+                if value.lower() in ("any", "all", "none", "clear", "所有", "不限", "0"):
+                    new_classes = []
+                    msg = "✓ 车型席别已设为*不限*（任意 Platinum/Gold/Express 均可）。"
+                else:
+                    new_classes = [c.strip() for c in re.split(r"[,]+", value) if c.strip()]
+                    msg = f"✓ 目标席别已更新为: *{', '.join(new_classes)}*"
+                new_task = dataclasses.replace(current_task, preferred_classes=new_classes)
+                self.engine.update_task(new_task)
+                return msg
+
             else:
-                return f"⚠️ 未知设置项 '{field}'。支持的字段：origin, dest, date, time, return_date, seats。"
+                return f"⚠️ 未知设置项 '{field}'。支持的字段：origin, dest, date, time, return_date, seats, trains, class。"
         except Exception as e:
             return f"❌ 设置失败: {e}"
 
