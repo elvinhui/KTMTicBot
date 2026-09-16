@@ -14,6 +14,8 @@ services:
       - KTM_DB_PATH=/app/data/ktm_sniper.db
       - POLL_INTERVAL=4.5
       - POLL_JITTER=1.5
+      - KTM_EMAIL=${KTM_EMAIL}
+      - KTM_PASSWORD=${KTM_PASSWORD}
     volumes:
       - ./tasks.json:/app/tasks.json:ro
       - ./data:/app/data
