@@ -77,12 +77,28 @@ class StationIndex:
     id_to_data:  dict = field(default_factory=dict)
 
     def resolve(self, name: str):
-        key = name.upper().strip()
+        # 1. Canonical alias resolution (e.g. 'Penang' -> 'BUTTERWORTH', 'BM' -> 'BUKIT MERTAJAM')
+        try:
+            from ktm_sniper.stations import KTMStationRegistry
+            _, canon = KTMStationRegistry.resolve_station(name)
+            key = canon.upper().strip()
+        except Exception:
+            key = name.upper().strip()
+
+        # 2. Exact match with canonical name
         if key in self.name_to_id:
             sid = self.name_to_id[key]
             return sid, self.id_to_data.get(sid, "")
+
+        # 3. Direct match with raw query
+        raw_key = name.upper().strip()
+        if raw_key in self.name_to_id:
+            sid = self.name_to_id[raw_key]
+            return sid, self.id_to_data.get(sid, "")
+
+        # 4. Substring / partial match
         for k, sid in self.name_to_id.items():
-            if key in k:
+            if key in k or raw_key in k:
                 return sid, self.id_to_data.get(sid, "")
         raise KeyError(f"Station '{name}' not found in KITS station index.")
 
