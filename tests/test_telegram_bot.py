@@ -124,6 +124,9 @@ def test_command_listener_single_poll():
         ]
     }
     mock_session.get.return_value = mock_response
+    mock_post_resp = MagicMock()
+    mock_post_resp.status_code = 200
+    mock_session.post.return_value = mock_post_resp
 
     engine = MagicMock()
     listener = TelegramCommandListener(

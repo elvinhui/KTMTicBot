@@ -68,6 +68,12 @@ class TelegramCommandHandler:
             response = self._handle_seat(parts[1:])
         elif command in ("/cancel", "取消", "放弃"):
             response = self._handle_cancel_selection()
+        elif command.isdigit() and getattr(self.engine, "last_found_trips", None):
+            response = self._handle_book([command])
+        elif getattr(self.engine, "selected_trip", None) and (
+            re.match(r"^\d+[a-zA-Z]$", command) or command in ("auto", "靠窗", "走道", "自动")
+        ):
+            response = self._handle_seat([command])
         else:
             response = (
                 "💡 未知指令。您可以发送：\n"
@@ -434,8 +440,10 @@ class TelegramCommandListener(threading.Thread):
                 chat_id = chat.get("id")
                 text = msg.get("text", "")
 
+                logger.info(f"📩 收到 Telegram [chat_id={chat_id}] 消息: {text}")
                 reply = self.handler.handle_message(chat_id=chat_id, text=text)
                 if reply and chat_id:
+                    logger.info(f"📤 正在回复 Telegram: {reply[:50]}...")
                     self._send_reply(chat_id, reply)
         except Exception as e:
             logger.debug(f"Telegram poll tick error: {e}")
@@ -448,7 +456,17 @@ class TelegramCommandListener(threading.Thread):
                 "text": text,
                 "parse_mode": "Markdown"
             }
-            self.session.post(send_url, json=payload, timeout=10)
+            resp = self.session.post(send_url, json=payload, timeout=10)
+            if resp.status_code != 200:
+                logger.warning(f"Telegram Markdown 发送失败 ({resp.status_code}): {resp.text}，正在降级为纯文本重发...")
+                payload.pop("parse_mode", None)
+                retry_resp = self.session.post(send_url, json=payload, timeout=10)
+                if retry_resp.status_code == 200:
+                    logger.info("✓ 纯文本降级已成功送达 Telegram！")
+                else:
+                    logger.error(f"❌ 纯文本重发也失败: {retry_resp.text}")
+            else:
+                logger.info("✓ 消息已成功送达 Telegram！")
         except Exception as e:
             logger.warning(f"Failed to send Telegram reply: {e}")
 
