@@ -409,7 +409,11 @@ class TelegramCommandHandler:
 
     def _handle_seat(self, args: list) -> str:
         if not hasattr(self.engine, "selected_trip") or not self.engine.selected_trip:
-            return "⚠️ 请先发送 `/book <序号>` 选择车次，再指定座位！"
+            pending = getattr(self.engine, "last_found_trips", [])
+            if pending:
+                self.engine.selected_trip = pending[0]
+            else:
+                return "⚠️ 当前没有等待订票的车次。守护引擎发现余票时会主动向您推送候选清单！"
 
         if not self.engine.task.passengers:
             return (
