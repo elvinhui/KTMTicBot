@@ -12,7 +12,11 @@ class TelegramTicketNotifier:
     def __init__(self, bot_token: str, chat_id: str, session=None):
         self.bot_token = bot_token
         self.chat_id = chat_id
-        self.session = session
+        if session is None and bot_token:
+            import requests
+            self.session = requests.Session()
+        else:
+            self.session = session
 
     def mask_sensitive_data(self, id_number: str) -> str:
         if len(id_number) <= 4:
@@ -70,7 +74,7 @@ class TelegramTicketNotifier:
     ) -> bool:
         message = self.format_message(booking_id, trip_details, passenger_name, raw_id, passengers)
         
-        if self.session is None:
+        if not self.bot_token or not self.chat_id or self.session is None:
             logger.info(f"Notification alert (dry-run):\n{message}")
             return True
 
