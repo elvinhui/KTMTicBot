@@ -91,6 +91,17 @@ def test_command_handler_add_passenger(sample_engine):
     assert sample_engine.task.passengers[1].name == "Siti Nurhaliza"
     assert sample_engine.task.passengers[1].gender == "Female"
 
+def test_command_handler_add_passenger_unquoted_with_spaces(sample_engine):
+    handler = TelegramCommandHandler(engine=sample_engine, authorized_chat_id="1682009086")
+    res = handler.handle_message(chat_id="1682009086", text='/add_passengers TAN JIA HUI 960217075045 MALE')
+    assert res is not None
+    assert "TAN JIA HUI" in res
+    p = sample_engine.task.passengers[-1]
+    assert p.name == "TAN JIA HUI"
+    assert p.id_number == "960217075045"
+    assert p.gender == "Male"
+
+
 def test_command_handler_list_passengers(sample_engine):
     handler = TelegramCommandHandler(engine=sample_engine, authorized_chat_id="1682009086")
     res = handler.handle_message(chat_id="1682009086", text="/passengers")

@@ -3,6 +3,7 @@ import threading
 import time
 import dataclasses
 import shlex
+import re
 from typing import Optional, Dict, Any
 import requests
 
@@ -237,29 +238,76 @@ class TelegramCommandHandler:
         except Exception as e:
             return f"❌ 设置失败: {e}"
 
+    @staticmethod
+    def parse_passenger_from_text(text: str) -> Passenger:
+        tokens = shlex.split(text) if ('"' in text or "'" in text) else text.split()
+        if tokens and tokens[0].startswith(("/", "添加", "增加", "加人")):
+            tokens = tokens[1:]
+
+        if not tokens:
+            raise ValueError("缺少乘客信息，格式：`/add_passenger <姓名> <证件号> [电话] [性别]`")
+
+        gender = None
+        phone = None
+        id_number = None
+
+        # 1. Extract gender if present
+        for i, tok in enumerate(tokens):
+            t_clean = tok.strip().upper()
+            if t_clean in ("MALE", "M", "MAN", "BOY", "男", "先生"):
+                gender = "Male"
+                tokens.pop(i)
+                break
+            elif t_clean in ("FEMALE", "F", "WOMAN", "GIRL", "女", "女士"):
+                gender = "Female"
+                tokens.pop(i)
+                break
+
+        # 2. Extract Malaysian IC (12 digits) or standard Passport
+        for i, tok in enumerate(tokens):
+            t_clean = re.sub(r"[^A-Za-z0-9]", "", tok)
+            if len(t_clean) == 12 and t_clean.isdigit():
+                id_number = tok.strip()
+                if not gender:
+                    gender = "Male" if int(t_clean[-1]) % 2 != 0 else "Female"
+                tokens.pop(i)
+                break
+            elif re.match(r"^[A-Za-z]\d{7,9}$", t_clean):
+                id_number = tok.strip()
+                tokens.pop(i)
+                break
+
+        # 3. Extract Phone Number (10-11 digits or starting with 01/+60)
+        for i, tok in enumerate(tokens):
+            t_clean = re.sub(r"[^0-9+]", "", tok)
+            if re.match(r"^(\+?601|01)\d{7,9}$", t_clean) or (len(t_clean) in (10, 11) and t_clean.startswith("0")):
+                phone = tok.strip()
+                tokens.pop(i)
+                break
+
+        # If ID still not matched, check for any token with digits >= 6
+        if not id_number:
+            for i, tok in enumerate(tokens):
+                if any(c.isdigit() for c in tok) and len(tok) >= 6:
+                    id_number = tok.strip()
+                    tokens.pop(i)
+                    break
+
+        name = " ".join(tokens).strip()
+        if not name:
+            name = "Passenger"
+        if not id_number:
+            raise ValueError("未能识别有效证件号码 (大马身份证需12位数字，例如 `960217075045`)")
+        if not phone:
+            phone = "0123456789"
+        if not gender:
+            gender = "Male"
+
+        return Passenger(name=name, id_number=id_number, gender=gender, phone=phone)
+
     def _handle_add_passenger(self, text: str) -> str:
         try:
-            tokens = shlex.split(text)
-            args = tokens[1:]
-            if len(args) < 2:
-                return (
-                    "⚠️ `/add_passenger` 参数不足。正确用法：\n"
-                    "• `/add_passenger <姓名> <身份证/护照> [电话] [性别]`\n"
-                    "• 示例：`/add_passenger \"Siti Nurhaliza\" 950202-10-5566 0198765432 Female`\n"
-                    "• 简写：`/add_passenger Tan 900101-14-5566 0123456789`"
-                )
-
-            name = args[0].strip()
-            id_number = args[1].strip()
-            phone = args[2].strip() if len(args) > 2 else "0123456789"
-            gender = args[3].strip() if len(args) > 3 else "Male"
-
-            new_passenger = Passenger(
-                name=name,
-                id_number=id_number,
-                gender=gender,
-                phone=phone
-            )
+            new_passenger = self.parse_passenger_from_text(text)
 
             current_task = self.engine.task
             new_passengers = list(current_task.passengers) + [new_passenger]
@@ -270,8 +318,12 @@ class TelegramCommandHandler:
             )
             self.engine.update_task(new_task)
 
+            gender_label = "男 (Male)" if new_passenger.gender.lower() in ("male", "m") else "女 (Female)"
             return (
-                f"✓ 已成功添加乘车人: *{new_passenger.name}* (`{new_passenger.masked_id}`)！\n"
+                f"✓ 已成功添加乘车人:\n"
+                f"• *姓名*: *{new_passenger.name}*\n"
+                f"• *证件*: `{new_passenger.masked_id}` | {gender_label}\n"
+                f"• *电话*: `{new_passenger.masked_phone}`\n\n"
                 f"当前共 {len(new_passengers)} 位乘车人，锁定席位数已自动同步为 {len(new_passengers)}。"
             )
         except Exception as e:
