@@ -23,6 +23,8 @@ data/
 # Playwright screenshots and test artifacts
 *.png
 *.jpg
+*.har
 .pytest_cache/
 .coverage
 htmlcov/
+

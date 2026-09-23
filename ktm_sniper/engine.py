@@ -38,7 +38,14 @@ class KTMSniperEngine:
             self.task.task_id = f"task-{uuid.uuid4().hex[:8]}"
 
         self.poller = poller or AdaptivePoller()
-        self.checker = checker or KTMTicketChecker()
+        if checker is None:
+            try:
+                from ktm_sniper.network.session import KITSClient
+                self.checker = KTMTicketChecker(session=KITSClient())
+            except Exception:
+                self.checker = KTMTicketChecker()
+        else:
+            self.checker = checker
         self.reserver = reserver or KTMSeatReserver()
         self.notifier = notifier
         self.repository = repository
@@ -133,18 +140,23 @@ class KTMSniperEngine:
             except Exception as e:
                 logger.warning(f"Session re-auth check failed: {e}")
 
-        # 1. Fetch available trips (via browser or checker)
+        # 1. Fetch available trips (curl_cffi HTTP polling is preferred for monitoring)
         trips: List[TripInfo] = []
-        if self.browser_driver:
-            try:
-                scraped = self.browser_driver.scrape_trips()
-                trips = [t for t in scraped if self.task.matches_trip(t)]
-            except Exception as e:
-                logger.error(f"Browser scraping error: {e}")
+        try:
+            trips = self.checker.find_matching_trips(self.task)
+        except Exception as e:
+            logger.warning(f"HTTP checker query error ({e}), falling back to browser scraping if available...")
+            if self.browser_driver:
+                try:
+                    scraped = self.browser_driver.scrape_trips()
+                    trips = [t for t in scraped if self.task.matches_trip(t)]
+                except Exception as b_err:
+                    logger.error(f"Browser scraping error: {b_err}")
+                    self.consecutive_errors += 1
+                    return None
+            else:
                 self.consecutive_errors += 1
                 return None
-        else:
-            trips = self.checker.find_matching_trips(self.task)
 
         # 2. Evaluate matches
         if not trips:
