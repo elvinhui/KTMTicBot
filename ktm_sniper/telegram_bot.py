@@ -411,6 +411,14 @@ class TelegramCommandHandler:
         if not hasattr(self.engine, "selected_trip") or not self.engine.selected_trip:
             return "⚠️ 请先发送 `/book <序号>` 选择车次，再指定座位！"
 
+        if not self.engine.task.passengers:
+            return (
+                "⚠️ 当前尚未添加乘车人信息！\n\n"
+                "请先回复添加乘车人：\n"
+                "👉 `/add_passenger TAN JIA HUI 960217075045 MALE`\n\n"
+                "添加完成后，再次回复 `/seat 3A` 或 `/seat auto` 即可立即锁定生成订单！"
+            )
+
         seat_choice = args[0].strip().upper() if args else "AUTO"
         trip = self.engine.selected_trip
 

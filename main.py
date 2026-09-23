@@ -322,13 +322,15 @@ def main():
             return
 
         passengers = []
+        name_val = args.name or os.getenv("KTM_PASSENGER_NAME", "").strip()
         ic_val = args.ic or os.getenv("KTM_PASSENGER_IC", "").strip()
         phone_val = args.phone or os.getenv("KTM_PASSENGER_PHONE", "").strip() or "0123456789"
-        if args.name and ic_val:
+        gender_val = args.gender or os.getenv("KTM_PASSENGER_GENDER", "").strip() or "Male"
+        if name_val and ic_val:
             passengers.append(Passenger(
-                name=args.name,
+                name=name_val,
                 id_number=ic_val,
-                gender=args.gender,
+                gender=gender_val,
                 phone=phone_val
             ))
         task_config = SniperTaskConfig(
