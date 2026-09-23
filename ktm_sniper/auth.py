@@ -46,6 +46,7 @@ class KTMAuthenticator:
         self.email = email or settings.KTM_EMAIL
         self.password = password or settings.KTM_PASSWORD
         self._is_authenticated = False
+        self._last_error: str = ""
 
     @property
     def is_authenticated(self) -> bool:
@@ -108,6 +109,7 @@ class KTMAuthenticator:
             # 7. Check for login errors (modal popups with error messages)
             if self._has_login_error(page):
                 error_msg = self._extract_login_error(page)
+                self._last_error = error_msg
                 if "multiple login" in error_msg.lower():
                     logger.error(f"❌ KITS 登录失败 [{masked}]: KTMB 限制单设备在线！检测到该账号当前已在其他浏览器或手机端登录。请先在您的个人浏览器或 App 中点击【Log Out 退出登录】，然后再运行机器人！")
                 else:
@@ -212,12 +214,22 @@ class KTMAuthenticator:
 
         if notifier:
             try:
-                notifier.send_raw_message(
-                    f"🚨 *KITS 登录失败*\n\n"
-                    f"账号: `{self.masked_email}`\n"
-                    f"已重试 {self.MAX_RETRIES} 次均失败。\n\n"
-                    f"请检查 `.env` 中的 `KTM_EMAIL` 和 `KTM_PASSWORD` 是否正确。"
-                )
+                if "multiple login" in self._last_error.lower():
+                    alert_text = (
+                        f"⚠️ *【KTMB 登录限制提醒】*\n\n"
+                        f"账号: `{self.masked_email}`\n"
+                        f"原因: 检测到该账号当前已在其他浏览器或手机 App 中登录。\n\n"
+                        f"💡 *无需担心*：守护引擎已自动转为【免登录协议高速监控模式】，余票监控不受任何影响！\n"
+                        f"👉 如需机器人自动代锁座，请在您的个人手机或浏览器中点击【Log Out 退出登录】。"
+                    )
+                else:
+                    alert_text = (
+                        f"🚨 *KITS 登录失败*\n\n"
+                        f"账号: `{self.masked_email}`\n"
+                        f"已重试 {self.MAX_RETRIES} 次均失败。\n\n"
+                        f"请检查 `.env` 中的 `KTM_EMAIL` 和 `KTM_PASSWORD` 是否正确。"
+                    )
+                notifier.send_raw_message(alert_text)
             except Exception as e:
                 logger.warning(f"发送 Telegram 登录失败告警失败: {e}")
 
