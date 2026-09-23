@@ -64,6 +64,90 @@ class TelegramTicketNotifier:
         )
         return message
 
+    def format_trip_options_message(
+        self,
+        trips: List[Any],
+        origin: str,
+        destination: str,
+        date: str
+    ) -> str:
+        options = []
+        for idx, t in enumerate(trips[:5], start=1):
+            t_no = getattr(t, "train_no", t.get("train_no") if isinstance(t, dict) else "ETS")
+            t_cls = getattr(t, "train_class", t.get("train_class", t.get("class")) if isinstance(t, dict) else "ETS Gold")
+            dep = getattr(t, "departure_time", t.get("departure_time") if isinstance(t, dict) else "")
+            arr = getattr(t, "arrival_time", t.get("arrival_time") if isinstance(t, dict) else "")
+            seats = getattr(t, "available_seats", t.get("available_seats") if isinstance(t, dict) else 0)
+            fare = getattr(t, "fare", t.get("fare") if isinstance(t, dict) else 0.0)
+            options.append(
+                f"[{idx}] *{dep}* ➡️ *{arr}* | {t_cls} (*{t_no}*)\n"
+                f"     剩余 *{seats}* 席 | 票价: MYR {fare:.2f}\n"
+                f"     👉 发送: `/book {idx}` 选定该班次"
+            )
+
+        first_t = getattr(trips[0], "train_no", "1") if trips else "1"
+        msg = (
+            f"🎫 *【KTMB 发现可用车次，请选择出发时间】* 🎫\n\n"
+            f"• *路线*: *{origin}* ➡️ *{destination}*\n"
+            f"• *出发日期*: `{date}`\n"
+            f"• *在售车次*:\n\n" + "\n\n".join(options) + "\n\n"
+            f"💡 *操作提示*: 在手机上直接回复例如 `/book 1` 或 `/book {first_t}` 选定班次；回复 `/cancel` 可忽略本次继续监控。"
+        )
+        return msg
+
+    def format_seat_options_message(
+        self,
+        train_no: str,
+        depart_time: str,
+        coaches: Any
+    ) -> str:
+        coach_blocks = []
+        if isinstance(coaches, dict):
+            for coach_name, seat_types in list(coaches.items())[:3]:
+                if isinstance(seat_types, dict):
+                    window_seats = ", ".join(seat_types.get("window", [])[:8]) or "暂无"
+                    aisle_seats = ", ".join(seat_types.get("aisle", [])[:8]) or "暂无"
+                else:
+                    window_seats = ", ".join(str(s) for s in seat_types[:8]) or "暂无"
+                    aisle_seats = "暂无"
+                coach_blocks.append(
+                    f"🚆 *Coach {coach_name}*:\n"
+                    f"  • 靠窗 (Window): `{window_seats}`\n"
+                    f"  • 走道 (Aisle):  `{aisle_seats}`"
+                )
+        elif isinstance(coaches, list):
+            for c in coaches[:3]:
+                c_name = c.get("coach", "Coach")
+                seats = c.get("seats", [])
+                win = [s.get("seat_no") for s in seats if "win" in str(s.get("type", "")).lower()]
+                ais = [s.get("seat_no") for s in seats if "ais" in str(s.get("type", "")).lower()]
+                if not win and not ais and seats:
+                    win = [s.get("seat_no") for s in seats[:4]]
+                coach_blocks.append(
+                    f"🚆 *{c_name}*:\n"
+                    f"  • 靠窗 (Window): `{', '.join(filter(None, win)) or '暂无'}`\n"
+                    f"  • 走道 (Aisle):  `{', '.join(filter(None, ais)) or '暂无'}`"
+                )
+
+        msg = (
+            f"💺 *【请选择车厢与座位】* 💺\n\n"
+            f"• *车次*: *{train_no}* (出发时间: `{depart_time}`)\n\n"
+            + "\n\n".join(coach_blocks) + "\n\n"
+            f"👉 *请回复指定座位*:\n"
+            f"• 回复 `/seat <座位号>` (例如: `/seat 3A` 锁定指定座)\n"
+            f"• 回复 `/seat auto` (由系统自动挑选最优靠窗位)\n"
+            f"• 回复 `/cancel` 放弃并继续监控"
+        )
+        return msg
+
+    def send_trip_options(self, trips: List[Any], origin: str, destination: str, date: str) -> bool:
+        text = self.format_trip_options_message(trips, origin, destination, date)
+        return self.send_raw_message(text)
+
+    def send_seat_options(self, train_no: str, depart_time: str, coaches: Dict[str, Dict[str, List[str]]]) -> bool:
+        text = self.format_seat_options_message(train_no, depart_time, coaches)
+        return self.send_raw_message(text)
+
     def send_alert(
         self,
         booking_id: str,

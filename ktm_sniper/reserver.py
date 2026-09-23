@@ -32,9 +32,10 @@ class KTMSeatReserver:
     def reserve_seat(
         self,
         trip_id: str,
-        seat_preference: str,
+        seat_preference: str = "auto",
         passenger: Optional[Union[Dict[str, Any], Passenger]] = None,
-        passengers: Optional[List[Union[Dict[str, Any], Passenger]]] = None
+        passengers: Optional[List[Union[Dict[str, Any], Passenger]]] = None,
+        driver=None
     ) -> Dict[str, Any]:
         pass_list: List[Union[Dict[str, Any], Passenger]] = []
         if passengers:
@@ -48,34 +49,35 @@ class KTMSeatReserver:
         for p in pass_list:
             self.validate_passenger(p)
             p_data = p.to_dict() if isinstance(p, Passenger) else p
-            passenger_payloads.append({
-                "name": p_data["name"],
-                "id_number": p_data["id_number"],
-                "gender": p_data["gender"],
-                "phone": p_data["phone"]
-            })
+            passenger_payloads.append(p_data)
 
+        # 1. Real Playwright browser driver execution
+        if driver is not None:
+            driver.lock_seat_and_proceed(seat_no=seat_preference)
+            return driver.fill_and_submit_passenger_form(pass_list)
+
+        # 2. Fallback / mock session for unit tests
+        if self.session is None:
+            official_id = "MOCK-123456"
+            return {
+                "status": "MOCK_SUCCESS",
+                "booking_id": official_id,
+                "timeout_minutes": 15,
+                "payment_url": f"{self.base_url}/Payment/Checkout?bookingId={official_id}"
+            }
+
+        url = f"{self.base_url}/v2/booking/reserve"
         payload = {
             "trip_id": trip_id,
             "seat_preference": seat_preference,
             "passenger": passenger_payloads[0],
             "passengers": passenger_payloads
         }
-
-        if self.session is None:
-            return {
-                "status": "MOCK_SUCCESS",
-                "booking_id": "MOCK-123456",
-                "timeout_minutes": 15,
-                "payment_url": f"{self.base_url}/v2/payment/checkout?bookingId=MOCK-123456"
-            }
-
-        url = f"{self.base_url}/v2/booking/reserve"
         response = self.session.post(url, json=payload)
         if response.status_code == 200:
             data = response.json()
             if "payment_url" not in data and "booking_id" in data:
-                data["payment_url"] = f"{self.base_url}/v2/payment/checkout?bookingId={data['booking_id']}"
+                data["payment_url"] = f"{self.base_url}/Payment/Checkout?bookingId={data['booking_id']}"
             return data
         else:
             raise RuntimeError(f"Reservation failed with status code: {response.status_code}")

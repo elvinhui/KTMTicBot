@@ -89,3 +89,55 @@ def test_telegram_notifier_send_photo(tmp_path):
     assert "sendPhoto" in args[0]
     assert kwargs["data"]["chat_id"] == "fake_chat"
     assert "photo" in kwargs["files"]
+
+
+def test_telegram_notifier_trip_options():
+    mock_session = MagicMock()
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_session.post.return_value = mock_response
+
+    notifier = TelegramTicketNotifier(bot_token="fake_token", chat_id="fake_chat", session=mock_session)
+    trips = [
+        {"train_no": "9044", "train_class": "Gold", "departure_time": "08:55", "arrival_time": "11:20", "available_seats": 5, "fare": 42.0},
+        {"train_no": "9046", "train_class": "Platinum", "departure_time": "10:15", "arrival_time": "12:35", "available_seats": 2, "fare": 56.0},
+    ]
+
+    msg = notifier.format_trip_options_message("KL Sentral", "Ipoh", "2026-10-05", trips)
+    assert "9044" in msg
+    assert "08:55" in msg
+    assert "9046" in msg
+    assert "/book 1" in msg
+
+    ok = notifier.send_trip_options("KL Sentral", "Ipoh", "2026-10-05", trips)
+    assert ok is True
+    mock_session.post.assert_called_once()
+
+
+def test_telegram_notifier_seat_options():
+    mock_session = MagicMock()
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_session.post.return_value = mock_response
+
+    notifier = TelegramTicketNotifier(bot_token="fake_token", chat_id="fake_chat", session=mock_session)
+    coaches = [
+        {
+            "coach": "Coach B",
+            "seats": [
+                {"seat_no": "3A", "type": "Window", "status": "Available"},
+                {"seat_no": "3B", "type": "Aisle", "status": "Available"}
+            ]
+        }
+    ]
+
+    msg = notifier.format_seat_options_message("9044", "08:55", coaches)
+    assert "9044" in msg
+    assert "Coach B" in msg
+    assert "3A" in msg
+    assert "Window" in msg
+    assert "/seat <座位号>" in msg
+
+    ok = notifier.send_seat_options("9044", "08:55", coaches)
+    assert ok is True
+    mock_session.post.assert_called_once()

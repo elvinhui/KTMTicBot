@@ -301,6 +301,8 @@ def main():
     parser.add_argument("--no-browser", action="store_true", help="禁用无头浏览器，仅使用 API 模式")
     parser.add_argument("--wizard", action="store_true", help="启动交互式预选向导")
     parser.add_argument("--max-cycles", type=int, default=None, help="最大轮询周期数 (留空为无限监听)")
+    parser.add_argument("--confirm", action="store_true", default=True, help="发现余票后先发送 Telegram 交互列表确认车次与座位 (默认 True)")
+    parser.add_argument("--auto-lock", action="store_true", help="发现余票后直接自动盲锁第一班车，无需确认")
 
     args = parser.parse_args()
 
@@ -354,6 +356,8 @@ def main():
         print("💡 未提供完整行程预选参数。请使用 --wizard 进入交互向导，或指定 --origin, --dest, --date 参数。")
         print("例如: python main.py --origin \"KL Sentral\" --dest \"Butterworth\" --date \"2026-09-20\" --wizard")
         return
+
+    task_config.require_confirmation = not args.auto_lock
 
     repo = TaskRepository()
     repo.save_task(task_config)

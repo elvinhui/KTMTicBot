@@ -58,6 +58,33 @@ class KTMSniperEngine:
         self.total_cycles: int = 0
         self._browser_needs_update: bool = False
         self._lock = threading.Lock()
+        self.last_found_trips: List[Any] = []
+        self.selected_trip: Optional[Any] = None
+        self.available_seats_cache: Dict[str, Any] = {}
+        self.require_confirmation: bool = getattr(task, "require_confirmation", False)
+
+    def fetch_seats_layout(self, train_no: str) -> Dict[str, Dict[str, List[str]]]:
+        if self.browser_driver:
+            return self.browser_driver.fetch_seats_layout(train_no)
+        return {
+            "B": {
+                "window": ["03A", "03D", "04A", "04D", "05A", "05D"],
+                "aisle":  ["03B", "03C", "04B", "04C", "05B", "05C"]
+            },
+            "C": {
+                "window": ["02A", "02D", "06A", "06D"],
+                "aisle":  ["02B", "02C", "06B", "06C"]
+            }
+        }
+
+    def execute_real_booking(self, trip: Any, seat_no: str = "auto") -> Dict[str, Any]:
+        train_no = getattr(trip, "train_no", trip.get("train_no") if isinstance(trip, dict) else "9044")
+        return self.reserver.reserve_seat(
+            trip_id=train_no,
+            seat_preference=seat_no,
+            passengers=self.task.passengers,
+            driver=self.browser_driver
+        )
 
     def update_task(self, new_task: SniperTaskConfig):
         """
@@ -163,6 +190,28 @@ class KTMSniperEngine:
             if self.repository:
                 self.repository.log_event(self.task.task_id, f"{leg_label}Polled trips: No matching seats found.")
             return None
+
+        self.last_found_trips = trips
+
+        # Interactive Confirmation Mode: send list to Telegram and wait for user reply!
+        if self.require_confirmation and self.notifier and len(trips) > 0:
+            logger.info(f"{leg_label} Found {len(trips)} available trips. Sending trip choices to Telegram...")
+            self.notifier.send_trip_options(
+                trips=trips,
+                origin=self.task.origin,
+                destination=self.task.destination,
+                date=self.task.date
+            )
+            self.is_paused = True
+            if self.repository:
+                self.repository.log_event(
+                    self.task.task_id,
+                    f"{leg_label} Sent {len(trips)} candidate trips to Telegram. Waiting for user /book confirmation."
+                )
+            return {
+                "status": "WAITING_CONFIRMATION",
+                "trips": trips
+            }
 
         # Select the best matching trip (first available)
         target_trip = trips[0]

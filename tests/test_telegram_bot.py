@@ -158,3 +158,51 @@ def test_command_handler_logs_to_repository(sample_engine, tmp_path):
     assert "920101-14-****" in record["raw_text_masked"]
     assert "0192****445" in record["raw_text_masked"]
     assert record["status"] == "SUCCESS"
+
+
+def test_command_handler_book_and_seat_flow(sample_engine):
+    handler = TelegramCommandHandler(engine=sample_engine, authorized_chat_id="1682009086")
+
+    # 1. /book when no trips are pending
+    res = handler.handle_message(chat_id="1682009086", text="/book 1")
+    assert "当前没有等待确认的车次" in res
+
+    # 2. Add pending trips and book option 1
+    sample_engine.last_found_trips = [
+        {"train_no": "9044", "train_class": "Gold", "departure_time": "08:55", "arrival_time": "11:20", "available_seats": 5, "fare": 42.0},
+        {"train_no": "9046", "train_class": "Platinum", "departure_time": "10:15", "arrival_time": "12:35", "available_seats": 2, "fare": 56.0}
+    ]
+    sample_engine.fetch_seats_layout = MagicMock(return_value=[
+        {"coach": "Coach B", "seats": [{"seat_no": "3A", "type": "Window", "status": "Available"}]}
+    ])
+    sample_engine.notifier = MagicMock()
+    sample_engine.notifier.format_seat_options_message.return_value = "Seat layout for 9044 Coach B 3A"
+
+    res_book = handler.handle_message(chat_id="1682009086", text="/book 1")
+    assert "Seat layout for 9044" in res_book
+    assert sample_engine.selected_trip["train_no"] == "9044"
+
+    # 3. /seat before selecting trip shouldn't fail, but since selected_trip is set:
+    sample_engine.execute_real_booking = MagicMock(return_value={
+        "status": "SUCCESS",
+        "booking_id": "KITS-9044-CONFIRMED",
+        "payment_url": "https://online.ktmb.com.my/Payment/Checkout?bookingId=KITS-9044-CONFIRMED"
+    })
+    res_seat = handler.handle_message(chat_id="1682009086", text="/seat 3A")
+    assert "KITS-9044-CONFIRMED" in res_seat
+    assert "3A" in res_seat
+    assert sample_engine.selected_trip is None
+    assert len(sample_engine.last_found_trips) == 0
+
+
+def test_command_handler_cancel_selection(sample_engine):
+    handler = TelegramCommandHandler(engine=sample_engine, authorized_chat_id="1682009086")
+    sample_engine.last_found_trips = [{"train_no": "9044"}]
+    sample_engine.selected_trip = {"train_no": "9044"}
+    sample_engine.is_paused = True
+
+    res = handler.handle_message(chat_id="1682009086", text="/cancel")
+    assert "已取消本次订座选择" in res
+    assert sample_engine.selected_trip is None
+    assert len(sample_engine.last_found_trips) == 0
+    assert sample_engine.is_paused is False

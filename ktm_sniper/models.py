@@ -92,6 +92,7 @@ class SniperTaskConfig:
     return_time_to: str = "23:59"
     return_preferred_trains: List[str] = field(default_factory=list)
     return_preferred_classes: List[str] = field(default_factory=list)
+    require_confirmation: bool = False
 
     def __post_init__(self):
         if self.origin.strip().upper() == self.destination.strip().upper():

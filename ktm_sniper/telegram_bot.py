@@ -62,10 +62,18 @@ class TelegramCommandHandler:
             response = self._handle_clear_passengers()
         elif command == "/set":
             response = self._handle_set(parts[1:])
+        elif command in ("/book", "订票", "选车"):
+            response = self._handle_book(parts[1:])
+        elif command in ("/seat", "/seats", "选座", "订座"):
+            response = self._handle_seat(parts[1:])
+        elif command in ("/cancel", "取消", "放弃"):
+            response = self._handle_cancel_selection()
         else:
             response = (
                 "💡 未知指令。您可以发送：\n"
                 "• /status - 查看当前抢票与监听状态\n"
+                "• /book <序号> - 选择并预订心仪车次\n"
+                "• /seat <座位号> - 指定座位 (如 /seat 3A 或 /seat auto)\n"
                 "• /set <字段> <值> - 动态修改行程\n"
                 "• /add_passenger <姓名> <证件号> - 增加乘车人\n"
                 "• /passengers - 查看当前乘车人列表\n"
@@ -302,6 +310,87 @@ class TelegramCommandHandler:
             "• `/resume` - 恢复监听\n"
             "• `/help` - 呼出本帮助菜单"
         )
+
+    def _handle_book(self, args: list) -> str:
+        if not args:
+            return "💡 请指定要预订的车次序号或车次号，例如: `/book 1` 或 `/book 9044`。"
+
+        target = args[0].strip()
+        found_trip = None
+
+        pending = getattr(self.engine, "last_found_trips", [])
+        if target.isdigit() and 1 <= int(target) <= len(pending):
+            found_trip = pending[int(target) - 1]
+        else:
+            for t in pending:
+                t_no = getattr(t, "train_no", t.get("train_no") if isinstance(t, dict) else "")
+                if target.upper() == str(t_no).upper():
+                    found_trip = t
+                    break
+
+        if not found_trip:
+            if pending:
+                return f"⚠️ 未找到指定班次 '{target}'。请回复 `/book 1` 到 `/book {len(pending)}` 之间的序号。"
+            return "💡 当前没有等待确认的车次。守护引擎发现余票时会主动向您推送候选清单！"
+
+        self.engine.selected_trip = found_trip
+
+        # Fetch seat layout
+        train_no = getattr(found_trip, "train_no", found_trip.get("train_no") if isinstance(found_trip, dict) else "9044")
+        dep_time = getattr(found_trip, "departure_time", found_trip.get("departure_time") if isinstance(found_trip, dict) else "00:00")
+        coaches = self.engine.fetch_seats_layout(train_no)
+        self.engine.available_seats_cache = coaches
+
+        if hasattr(self.engine, "notifier") and self.engine.notifier:
+            return self.engine.notifier.format_seat_options_message(
+                train_no=train_no,
+                depart_time=dep_time,
+                coaches=coaches
+            )
+        return f"✅ 已选定车次 {train_no}！请回复 `/seat <座位号>` (例如: `/seat 3A` 或 `/seat auto`) 确认座位！"
+
+    def _handle_seat(self, args: list) -> str:
+        if not hasattr(self.engine, "selected_trip") or not self.engine.selected_trip:
+            return "⚠️ 请先发送 `/book <序号>` 选择车次，再指定座位！"
+
+        seat_choice = args[0].strip().upper() if args else "AUTO"
+        trip = self.engine.selected_trip
+
+        try:
+            res = self.engine.execute_real_booking(trip=trip, seat_no=seat_choice)
+            t_no = getattr(trip, "train_no", trip.get("train_no") if isinstance(trip, dict) else "ETS")
+            t_cls = getattr(trip, "train_class", trip.get("train_class") if isinstance(trip, dict) else "ETS Gold")
+            dep_time = getattr(trip, "departure_time", trip.get("departure_time") if isinstance(trip, dict) else "")
+            booking_id = res.get("booking_id", f"KITS-{t_no}")
+            pay_url = res.get("payment_url", f"https://online.ktmb.com.my/Payment/Checkout?bookingId={booking_id}")
+
+            # Reset selection state
+            self.engine.selected_trip = None
+            self.engine.last_found_trips = []
+
+            p_name = "Passenger"
+            if self.engine.task.passengers:
+                p_name = self.engine.task.passengers[0].name
+
+            return (
+                f"🎉 *【KTMB 官方订单生成成功！】* 🎉\n\n"
+                f"• *官方订单号*: `{booking_id}`\n"
+                f"• *选定座位*: `{seat_choice}`\n"
+                f"• *车次等级*: *{t_no}* ({t_cls})\n"
+                f"• *发车时间*: `{dep_time}`\n"
+                f"• *乘车人*: {p_name}\n"
+                f"• *支付时限*: 官方倒计时 *15 分钟*\n\n"
+                f"👉 [立即前往 KTMB 官方结账付款]({pay_url})\n\n"
+                f"💡 您也可以打开手机【KTMB App】在【My Tickets】直接完成 FPX 支付！"
+            )
+        except Exception as e:
+            return f"❌ 预订下单失败: {e}\n建议回复 `/seat auto` 重试或回复 `/cancel` 继续监控。"
+
+    def _handle_cancel_selection(self) -> str:
+        self.engine.selected_trip = None
+        self.engine.last_found_trips = []
+        self.engine.is_paused = False
+        return "✅ 已取消本次订座选择，守护引擎已恢复后台实时监控！"
 
 
 
