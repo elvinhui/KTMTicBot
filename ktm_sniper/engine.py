@@ -295,6 +295,8 @@ class KTMSniperEngine:
             try:
                 result = self.step()
                 if result:
+                    if result.get("status") == "WAITING_CONFIRMATION":
+                        continue
                     if self.task.is_round_trip:
                         logger.info(f"🎉 去程车票锁定成功 ({result.get('booking_id')})！正在自动无缝切换至返程票守护...")
                         self._outbound_result = result
