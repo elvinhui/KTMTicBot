@@ -431,19 +431,19 @@ class KTMBrowserDriver:
             current_url = self.page.url
 
             import re
-            m = re.search(r"bookingId=([A-Za-z0-9\-_]+)", current_url)
-            official_id = m.group(1) if m else f"KITS-{int(time.time())}"
-            checkout_url = f"{self.base_url}/Payment/Checkout?bookingId={official_id}"
+            m = re.search(r"bookingId=([A-Za-z0-9\-_]+)", current_url, re.IGNORECASE)
+            if m:
+                official_id = m.group(1)
+                checkout_url = current_url
+            else:
+                official_id = f"KITS-{int(time.time())}"
+                checkout_url = current_url if "checkout" in current_url.lower() else f"{self.base_url}/Payment/Checkout?bookingId={official_id}"
 
             return {
                 "status": "SUCCESS",
                 "booking_id": official_id,
                 "payment_url": checkout_url
             }
-        except Exception:
-            official_id = f"KITS-{int(time.time())}"
-            return {
-                "status": "SUCCESS",
-                "booking_id": official_id,
-                "payment_url": f"{self.base_url}/Payment/Checkout?bookingId={official_id}"
-            }
+        except Exception as exc:
+            logger.error(f"❌ 官方乘车人表单提交异常: {exc}")
+            raise RuntimeError(f"KTMB 官方下单失败 ({exc})。请确认已登录 KTMB 且座位有效。")

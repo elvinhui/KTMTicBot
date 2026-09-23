@@ -79,6 +79,9 @@ class KTMSniperEngine:
 
     def execute_real_booking(self, trip: Any, seat_no: str = "auto") -> Dict[str, Any]:
         train_no = getattr(trip, "train_no", trip.get("train_no") if isinstance(trip, dict) else "9044")
+        if self.browser_driver and not self.browser_driver.is_logged_in() and self.authenticator:
+            logger.info("🔐 正在为官方订座执行认证登录...")
+            self.authenticator.ensure_authenticated(self.browser_driver.page)
         return self.reserver.reserve_seat(
             trip_id=train_no,
             seat_preference=seat_no,
