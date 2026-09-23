@@ -45,6 +45,18 @@ class TelegramCommandHandler:
         parts = clean_text.split()
         command = parts[0].lower()
 
+        # Support spaceless /book1, /book2, etc.
+        book_match = re.match(r"^/book(\d+)$", command)
+        if book_match:
+            parts = ["/book", book_match.group(1)]
+            command = "/book"
+
+        # Support spaceless /seat3A, /seat3a, etc.
+        seat_match = re.match(r"^/seat(\w+)$", command)
+        if seat_match:
+            parts = ["/seat", seat_match.group(1)]
+            command = "/seat"
+
         response = None
         # Handle command routing
         if command in ("/status", "/info", "状态", "info"):
@@ -65,7 +77,7 @@ class TelegramCommandHandler:
             response = self._handle_set(parts[1:])
         elif command in ("/book", "订票", "选车"):
             response = self._handle_book(parts[1:])
-        elif command in ("/seat", "/seats", "选座", "订座"):
+        elif command in ("/seat", "/seats", "选座", "订座", "/sear"):
             response = self._handle_seat(parts[1:])
         elif command in ("/cancel", "取消", "放弃"):
             response = self._handle_cancel_selection()
@@ -78,15 +90,15 @@ class TelegramCommandHandler:
         else:
             response = (
                 "💡 未知指令。您可以发送：\n"
-                "• /status - 查看当前抢票与监听状态\n"
-                "• /book <序号> - 选择并预订心仪车次\n"
-                "• /seat <座位号> - 指定座位 (如 /seat 3A 或 /seat auto)\n"
-                "• /set <字段> <值> - 动态修改行程\n"
-                "• /add_passenger <姓名> <证件号> - 增加乘车人\n"
-                "• /passengers - 查看当前乘车人列表\n"
-                "• /pause - 暂停监控\n"
-                "• /resume - 恢复监控\n"
-                "• /help - 查看完整使用帮助"
+                "• `/status` - 查看当前抢票与监听状态\n"
+                "• `/book <序号>` - 选择并预订心仪车次 (例如: `/book 1` 或直接发 `1`)\n"
+                "• `/seat <座位号>` - 指定座位 (例如: `/seat 3A` 或直接发 `3A` 或 `auto`)\n"
+                "• `/set <字段> <值>` - 动态修改行程\n"
+                "• `/add_passenger <姓名> <证件号>` - 增加乘车人\n"
+                "• `/passengers` - 查看当前乘车人列表\n"
+                "• `/pause` - 暂停监控\n"
+                "• `/resume` - 恢复监控\n"
+                "• `/help` - 查看完整使用帮助"
             )
 
         # Persist interaction into SQLite audit log (fully masked PII)
