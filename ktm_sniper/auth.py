@@ -118,9 +118,11 @@ class KTMAuthenticator:
                 return False
 
             # 8. Verify authenticated state
+            # 8. Verify authenticated state
             if self.verify_login(page):
                 logger.info(f"✅ KITS 登录成功 [{masked}]！")
                 self._is_authenticated = True
+                self._save_session_state(page)
                 return True
 
             # If still on login page, login failed
@@ -132,12 +134,22 @@ class KTMAuthenticator:
             # Navigated away from login => likely success
             logger.info(f"✅ KITS 登录成功 [{masked}] (已重定向到 {page.url})")
             self._is_authenticated = True
+            self._save_session_state(page)
             return True
 
         except Exception as e:
             logger.error(f"❌ KITS 登录异常 [{masked}]: {e}")
             self._is_authenticated = False
             return False
+
+    def _save_session_state(self, page, path: str = "data/auth_state.json"):
+        try:
+            import os
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            page.context.storage_state(path=path)
+            logger.info(f"💾 已将最新认证会话保存至 {path}")
+        except Exception as e:
+            logger.debug(f"Failed to auto-save storage_state: {e}")
 
     def verify_login(self, page) -> bool:
         """
@@ -191,9 +203,17 @@ class KTMAuthenticator:
 
         Returns True if authenticated, False if all retries exhausted.
         """
-        # Quick check: already authenticated?
+        # If page is uninitialized, navigate to homepage to check session from storage_state
+        if not page.url or page.url == "about:blank":
+            try:
+                page.goto(settings.BASE_URL, timeout=10000)
+                page.wait_for_load_state("domcontentloaded", timeout=10000)
+            except Exception:
+                pass
+
+        # Quick check: already authenticated via loaded storage_state?
         if self.verify_login(page):
-            logger.info(f"✅ KITS Session 仍然有效 [{self.masked_email}]")
+            logger.info(f"✅ KITS Session 仍然有效 [{self.masked_email}]，已继承持久化会话！")
             return True
 
         # Attempt login with retries

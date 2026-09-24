@@ -81,6 +81,8 @@ class TelegramCommandHandler:
             response = self._handle_seat(parts[1:])
         elif command in ("/cancel", "取消", "放弃"):
             response = self._handle_cancel_selection()
+        elif command in ("/cookie", "/set_cookie", "更新cookie"):
+            response = self._handle_set_cookie(clean_text)
         elif command.isdigit() and getattr(self.engine, "last_found_trips", None):
             response = self._handle_book([command])
         elif getattr(self.engine, "selected_trip", None) and (
@@ -473,6 +475,48 @@ class TelegramCommandHandler:
         self.engine.last_found_trips = []
         self.engine.is_paused = False
         return "✅ 已取消本次订座选择，守护引擎已恢复后台实时监控！"
+
+    def _handle_set_cookie(self, text: str) -> str:
+        parts = text.split(maxsplit=1)
+        if len(parts) < 2:
+            return (
+                "💡 请提供 Cookie 字符串，例如：\n"
+                "`/set_cookie .AspNetCore.Cookies=CfDJ8...`\n"
+                "或包含键值对的 Cookie 串（以分号分隔）。"
+            )
+        cookie_data = parts[1].strip()
+        try:
+            import json, os
+            cookies_list = []
+            if cookie_data.startswith("[") and cookie_data.endswith("]"):
+                cookies_list = json.loads(cookie_data)
+            else:
+                pairs = [p.strip() for p in cookie_data.split(";") if "=" in p]
+                for p in pairs:
+                    k, v = p.split("=", 1)
+                    cookies_list.append({
+                        "name": k.strip(),
+                        "value": v.strip(),
+                        "domain": ".ktmb.com.my",
+                        "path": "/"
+                    })
+
+            state = {
+                "cookies": cookies_list,
+                "origins": []
+            }
+            os.makedirs("data", exist_ok=True)
+            with open("data/auth_state.json", "w", encoding="utf-8") as f:
+                json.dump(state, f, indent=2)
+
+            if hasattr(self.engine, "browser_driver") and self.engine.browser_driver:
+                page = getattr(self.engine.browser_driver, "page", None)
+                if page and page.context:
+                    page.context.add_cookies(cookies_list)
+
+            return f"✓ 已成功更新并固化 {len(cookies_list)} 个会话 Cookie 至 `data/auth_state.json`！"
+        except Exception as e:
+            return f"❌ 更新 Cookie 失败: {e}"
 
 
 

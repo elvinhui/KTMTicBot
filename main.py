@@ -278,6 +278,64 @@ def load_from_json(file_path: str) -> List[SniperTaskConfig]:
         tasks.append(task)
     return tasks
 
+def run_login_gui():
+    """
+    Opens a visible browser on Windows, navigates to KITS login page,
+    lets the user log in (or auto-fills credentials), and persists the session
+    to data/auth_state.json upon success.
+    """
+    import time
+    print("\n🌐 --- 启动 KTMB 官方可视化登录助手 --- 🌐")
+    print("正在启动 Chrome 浏览器窗口，请稍候...")
+    mgr = BrowserManager(headless=False)
+    page = mgr.start()
+    auth = KTMAuthenticator(
+        email=settings.KTM_EMAIL,
+        password=settings.KTM_PASSWORD
+    )
+    login_url = settings.BASE_URL.rstrip("/") + "/Account/Login"
+    try:
+        page.goto(login_url)
+    except Exception as e:
+        print(f"⚠️ 页面导航提示: {e}")
+
+    # Try auto-fill if credentials exist
+    if settings.KTM_EMAIL and settings.KTM_PASSWORD:
+        try:
+            print(f"👉 检测到配置账号: {settings.KTM_EMAIL}，正在尝试自动填入...")
+            auth._dismiss_modals(page)
+            if page.locator("#Email").is_visible(timeout=3000):
+                page.fill("#Email", settings.KTM_EMAIL)
+                page.fill("#Password", settings.KTM_PASSWORD)
+                page.click("#LoginButton")
+        except Exception as e:
+            print(f"⚠️ 自动填入未完成 ({e})，请在弹出的浏览器窗口中直接手动输入完成登录。")
+
+    print("\n💡 请在弹出的浏览器窗口中完成登录：")
+    print("• 如果页面提示验证码或多设备登录，请按提示完成操作。")
+    print("• 登录成功后，助手会自动捕获 Cookies 并保存，无需其他操作！")
+    print("• 正在等待登录完成（最长等待 180 秒）...")
+
+    start_time = time.time()
+    logged_in = False
+    while time.time() - start_time < 180:
+        time.sleep(2.0)
+        try:
+            if auth.verify_login(page):
+                logged_in = True
+                break
+        except Exception:
+            pass
+
+    if logged_in:
+        saved_path = mgr.save_storage_state("data/auth_state.json")
+        print(f"\n🎉 官方登录成功！会话已永久固化保存至: {saved_path}")
+        print("💡 以后无论是本地还是 EC2 部署，都将直接使用该已认证状态，彻底免除密码登录与多设备冲突！\n")
+    else:
+        print("\n⏳ 等待超时或未完成登录。请重新运行重试。\n")
+
+    mgr.close()
+
 def main():
     parser = argparse.ArgumentParser(description="KTMB (KITS) 抢票与风控对抗机器人 (KTM-Ticket-Sniper)")
     parser.add_argument("--origin", help="出发站 (如 'KL Sentral' 或 'KLS')")
@@ -303,8 +361,13 @@ def main():
     parser.add_argument("--max-cycles", type=int, default=None, help="最大轮询周期数 (留空为无限监听)")
     parser.add_argument("--confirm", action="store_true", default=True, help="发现余票后先发送 Telegram 交互列表确认车次与座位 (默认 True)")
     parser.add_argument("--auto-lock", action="store_true", help="发现余票后直接自动盲锁第一班车，无需确认")
+    parser.add_argument("--login-gui", action="store_true", help="启动可视化浏览器完成一次性登录并将认证会话固化保存至 data/auth_state.json")
 
     args = parser.parse_args()
+
+    if args.login_gui:
+        run_login_gui()
+        return
 
     task_config: Optional[SniperTaskConfig] = None
 
