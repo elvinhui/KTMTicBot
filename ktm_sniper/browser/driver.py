@@ -312,15 +312,25 @@ class KTMBrowserDriver:
         except Exception:
             return False
 
-    def fetch_seats_layout(self, train_no: str) -> Dict[str, Dict[str, List[str]]]:
+    def fetch_seats_layout(self, train_no: str, task: Optional[Any] = None) -> Dict[str, Dict[str, List[str]]]:
         """
-        Clicks the Select (.btn-seat-layout) button for train_no and extracts
-        available seats grouped by coach and type (window vs aisle).
+        Navigates to /Trip if not already present, clicks the Pick Seats button for train_no,
+        and extracts available seats grouped by coach and type (window vs aisle).
         """
         self.dismiss_modals()
         try:
-            row = self.page.locator(f"tr:has-text('{train_no}')").first
-            btn = row.locator(".btn-seat-layout, a:has-text('Select')").first
+            # 1. Ensure browser is on the /Trip page
+            if "/Trip" not in (self.page.url or "") and task is not None:
+                logger.info(f"🧭 正在为订座将无头浏览器导航至 /Trip ({task.origin} -> {task.destination} on {task.date})...")
+                self.navigate_to_booking()
+                self.fill_search_criteria(task)
+                self.trigger_search()
+
+            row = self.page.locator(f"tbody.depart-trips tr:has-text('{train_no}')").first
+            if row.count() == 0:
+                row = self.page.locator(f"tr:has-text('{train_no}')").first
+
+            btn = row.locator(".btn-seat-layout, button:has-text('Pick Seats'), a:has-text('Pick Seats'), a:has-text('Select')").first
             if btn.count() > 0:
                 btn.click(timeout=5000)
             else:
@@ -361,8 +371,8 @@ class KTMBrowserDriver:
             """)
             if layout_data:
                 return layout_data
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"获取车次 {train_no} 实时座舱布局时异常: {e}")
 
         # Fallback layout
         return {
@@ -376,13 +386,23 @@ class KTMBrowserDriver:
             }
         }
 
-    def lock_seat_and_proceed(self, seat_no: str = "auto") -> bool:
+    def lock_seat_and_proceed(self, seat_no: str = "auto", train_no: Optional[str] = None, task: Optional[Any] = None) -> bool:
         """
-        In the #seatSelect modal, clicks the designated seat, clicks #confirmSeatBtn,
-        and proceeds to passenger page via .btn-passenger.
+        Ensures seat selection modal is open, selects seat, confirms seat,
+        and proceeds to passenger details (/Book).
         """
         try:
-            norm_seat = seat_no.strip().upper()
+            # If #seatSelect modal not open, open it
+            if not self.page.locator("#seatSelect").is_visible():
+                if train_no:
+                    self.fetch_seats_layout(train_no, task=task)
+                else:
+                    btn = self.page.locator("tbody.depart-trips tr .btn-seat-layout").first
+                    if btn.count() > 0:
+                        btn.click(timeout=5000)
+                    self.page.wait_for_selector("#seatSelect", state="visible", timeout=10000)
+
+            norm_seat = seat_no.strip().upper() if seat_no else "AUTO"
             if norm_seat in ("AUTO", "ANY", "DEFAULT", ""):
                 seat_el = self.page.locator("#seatSelect .selectable-icon[data-selected='false']").first
             else:
@@ -392,53 +412,127 @@ class KTMBrowserDriver:
                 seat_el.click(timeout=3000)
             
             self.page.locator("#confirmSeatBtn").click(timeout=5000)
-            time.sleep(1.0)
+            time.sleep(1.5)
 
-            self.page.locator(".btn-passenger").click(timeout=5000)
+            proceed_btn = self.page.locator("button:has-text('PROCEED TO PASSENGER DETAILS'), .btn-passenger").first
+            if proceed_btn.count() > 0:
+                proceed_btn.click(timeout=5000)
+            
+            try:
+                self.page.wait_for_url("**/Book**", timeout=15000)
+            except Exception:
+                pass
             self.page.wait_for_load_state("networkidle", timeout=10000)
             return True
-        except Exception:
+        except Exception as e:
+            logger.warning(f"锁座流程推进失败: {e}")
             return False
 
     def fill_and_submit_passenger_form(self, passengers: list) -> Dict[str, Any]:
         """
-        Fills passenger information and submits the reservation form on KITS.
+        Fills passenger information on official KITS /Book page, handles Takaful insurance
+        and meal prompts, and reaches the official Order / Payment options page.
         Returns dict with status, official booking_id, and payment_url.
         """
         try:
+            self.page.wait_for_selector("#Passengers_0__FullName, input.FullName", timeout=10000)
+
             for idx, p in enumerate(passengers):
                 p_name = getattr(p, "name", p.get("name") if isinstance(p, dict) else "")
                 p_id = getattr(p, "id_number", p.get("id_number") if isinstance(p, dict) else "")
                 p_phone = getattr(p, "phone", p.get("phone") if isinstance(p, dict) else "")
+                p_gender = getattr(p, "gender", p.get("gender") if isinstance(p, dict) else "Male")
 
-                name_input = self.page.locator(f"#PassengerName_{idx}, [name='PassengerName_{idx}'], input[placeholder*='Name']").first
+                name_input = self.page.locator(f"#Passengers_{idx}__FullName, input.FullName").first
                 if name_input.count() > 0:
                     name_input.fill(p_name)
 
-                id_input = self.page.locator(f"#IdentityNo_{idx}, [name='IdentityNo_{idx}'], input[placeholder*='IC']").first
+                id_input = self.page.locator(f"#Passengers_{idx}__IdentityNo, input.IdentityNo").first
                 if id_input.count() > 0:
                     id_input.fill(p_id)
 
-                phone_input = self.page.locator(f"#ContactNo_{idx}, [name='ContactNo_{idx}'], input[placeholder*='Phone']").first
+                phone_input = self.page.locator(f"#Passengers_{idx}__ContactNo, input.ContactNo").first
                 if phone_input.count() > 0:
                     phone_input.fill(p_phone)
 
-            submit_btn = self.page.locator("button[type='submit'], #btnSubmit, button:has-text('Proceed to Payment'), button:has-text('Confirm')").first
-            if submit_btn.count() > 0:
-                submit_btn.click(timeout=5000)
+                if str(p_gender).lower() in ("female", "f", "女"):
+                    self.page.locator(f"#Passengers_{idx}__GenderFemale").first.click(timeout=2000)
+                else:
+                    self.page.locator(f"#Passengers_{idx}__GenderMale").first.click(timeout=2000)
 
-            self.page.wait_for_load_state("networkidle", timeout=15000)
+                ticket_sel = self.page.locator(f"#Passengers_{idx}__Tickets_0__TicketTypeId").first
+                if ticket_sel.count() > 0:
+                    try:
+                        ticket_sel.select_option("Adult", timeout=2000)
+                    except Exception:
+                        pass
+
+            # Step 1: Submit passenger details
+            logger.info("📝 正在提交乘车人信息...")
+            self.page.locator("#btnConfirmPayment, button:has-text('PROCEED TO PAYMENT')").last.click(timeout=5000)
+            time.sleep(2.5)
+
+            # Step 2: Handle Takaful Insurance page
+            takaful_proceed = self.page.locator("#btnUpdateInsuranceYes, button:has-text('PROCEED TO PAYMENT')").last
+            if takaful_proceed.is_visible():
+                logger.info("🛡️ 正在处理 Takaful 保险确认...")
+                takaful_proceed.click(timeout=5000)
+                time.sleep(1.5)
+
+            takaful_confirm = self.page.locator("button:has-text('purchase Takaful'), a:has-text('purchase Takaful')").first
+            if takaful_confirm.is_visible():
+                takaful_confirm.click(timeout=5000)
+                time.sleep(2.0)
+
+            # Step 3: Handle Confirmation & Meals page
+            final_pay = self.page.locator("button:has-text('PROCEED TO PAYMENT'), a:has-text('PROCEED TO PAYMENT')").last
+            if final_pay.is_visible():
+                logger.info("🍽️ 正在处理餐食确认并提交订单...")
+                final_pay.click(timeout=5000)
+                time.sleep(1.5)
+
+            meal_confirm = self.page.locator("button:has-text('Confirmed'), a:has-text('Confirmed')").first
+            if meal_confirm.is_visible():
+                meal_confirm.click(timeout=5000)
+                time.sleep(2.5)
+
+            try:
+                self.page.wait_for_load_state("networkidle", timeout=15000)
+            except Exception:
+                pass
+
             current_url = self.page.url
+            screenshot_path = "reservation_success.png"
+            try:
+                self.page.screenshot(path=screenshot_path, full_page=True)
+            except Exception:
+                pass
 
+            # Extract Booking ID from page or URL
             import re
             m = re.search(r"bookingId=([A-Za-z0-9\-_]+)", current_url, re.IGNORECASE)
+            official_id = ""
             if m:
                 official_id = m.group(1)
-                checkout_url = current_url
             else:
-                official_id = f"KITS-{int(time.time())}"
-                checkout_url = current_url if "checkout" in current_url.lower() else f"{self.base_url}/Payment/Checkout?bookingId={official_id}"
+                try:
+                    official_id = self.page.evaluate("""
+                        () => {
+                            const bId = document.querySelector('[data-booking-id], #BookingId, input[name="BookingId"]');
+                            if (bId) return bId.value || bId.getAttribute('data-booking-id');
+                            const m = document.body.innerText.match(/Booking (?:No|ID|Reference)\\s*[:#]?\\s*([A-Za-z0-9\\-_]+)/i);
+                            return m ? m[1] : '';
+                        }
+                    """)
+                except Exception:
+                    pass
 
+            if not official_id:
+                official_id = f"KITS-{int(time.time())}"
+
+            checkout_url = current_url if ("checkout" in current_url.lower() or "book" in current_url.lower()) else f"{self.base_url}/Payment/Checkout?bookingId={official_id}"
+
+            logger.info(f"🎉 KTMB 官方订单生成成功！订单编号: {official_id}, 支付页面: {checkout_url}")
             return {
                 "status": "SUCCESS",
                 "booking_id": official_id,

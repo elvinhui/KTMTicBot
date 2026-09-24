@@ -35,7 +35,8 @@ class KTMSeatReserver:
         seat_preference: str = "auto",
         passenger: Optional[Union[Dict[str, Any], Passenger]] = None,
         passengers: Optional[List[Union[Dict[str, Any], Passenger]]] = None,
-        driver=None
+        driver=None,
+        task: Optional[Any] = None
     ) -> Dict[str, Any]:
         pass_list: List[Union[Dict[str, Any], Passenger]] = []
         if passengers:
@@ -53,7 +54,7 @@ class KTMSeatReserver:
 
         # 1. Real Playwright browser driver execution
         if driver is not None:
-            driver.lock_seat_and_proceed(seat_no=seat_preference)
+            driver.lock_seat_and_proceed(seat_no=seat_preference, train_no=trip_id, task=task)
             return driver.fill_and_submit_passenger_form(pass_list)
 
         # 2. Fallback / mock session for unit tests

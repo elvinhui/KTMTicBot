@@ -65,7 +65,7 @@ class KTMSniperEngine:
 
     def fetch_seats_layout(self, train_no: str) -> Dict[str, Dict[str, List[str]]]:
         if self.browser_driver:
-            return self.browser_driver.fetch_seats_layout(train_no)
+            return self.browser_driver.fetch_seats_layout(train_no, task=self.task)
         return {
             "B": {
                 "window": ["03A", "03D", "04A", "04D", "05A", "05D"],
@@ -86,7 +86,8 @@ class KTMSniperEngine:
             trip_id=train_no,
             seat_preference=seat_no,
             passengers=self.task.passengers,
-            driver=self.browser_driver
+            driver=self.browser_driver,
+            task=self.task
         )
 
     def update_task(self, new_task: SniperTaskConfig):
@@ -231,13 +232,19 @@ class KTMSniperEngine:
 
         # 3. Auto-reserve if enabled and passengers provided
         if self.task.auto_reserve and self.task.passengers:
+            if self.browser_driver and not self.browser_driver.is_logged_in() and self.authenticator:
+                logger.info("🔐 正在为官方订座执行认证登录...")
+                self.authenticator.ensure_authenticated(self.browser_driver.page)
+
             primary_passenger = self.task.passengers[0]
             trip_id = target_trip.trip_id or target_trip.train_no
             reservation_result = self.reserver.reserve_seat(
                 trip_id=trip_id,
                 seat_preference=self.task.seat_preference,
                 passenger=primary_passenger,
-                passengers=self.task.passengers
+                passengers=self.task.passengers,
+                driver=self.browser_driver,
+                task=self.task
             )
             booking_id = reservation_result.get("booking_id", "KITS-PENDING")
 
