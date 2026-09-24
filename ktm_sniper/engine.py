@@ -268,15 +268,16 @@ class KTMSniperEngine:
             }
             passenger_name = self.task.passengers[0].name if self.task.passengers else "Passenger"
             raw_id = self.task.passengers[0].id_number if self.task.passengers else "N/A"
+            payment_url = (reservation_result or {}).get("payment_url") if isinstance(reservation_result, dict) else None
 
             if screenshot_file:
                 caption = self.notifier.format_message(
-                    booking_id, trip_details, passenger_name, raw_id, passengers=self.task.passengers
+                    booking_id, trip_details, passenger_name, raw_id, passengers=self.task.passengers, payment_url=payment_url
                 )
                 self.notifier.send_photo_alert(screenshot_file, caption=caption)
             else:
                 self.notifier.send_alert(
-                    booking_id, trip_details, passenger_name, raw_id, passengers=self.task.passengers
+                    booking_id, trip_details, passenger_name, raw_id, passengers=self.task.passengers, payment_url=payment_url
                 )
 
         # 6. Update repository status

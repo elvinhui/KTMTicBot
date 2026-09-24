@@ -29,10 +29,11 @@ class TelegramTicketNotifier:
         trip_details: Dict[str, Any],
         passenger_name: str,
         raw_id: str,
-        passengers: Optional[Any] = None
+        passengers: Optional[Any] = None,
+        payment_url: Optional[str] = None
     ) -> str:
-        checkout_url = f"https://online.ktmb.com.my/v2/payment/checkout?bookingId={booking_id}"
-        history_url = "https://online.ktmb.com.my/Ticket/BookingHistory"
+        upcoming_url = "https://online.ktmb.com.my/Booking/UpcomingList"
+        portal_url = "https://online.ktmb.com.my/"
 
         if passengers and len(passengers) > 1:
             lines = []
@@ -57,10 +58,14 @@ class TelegramTicketNotifier:
             f"• *发车时间*: `{trip_details.get('departure_time', 'N/A')}`\n"
             f"{passenger_block}\n\n"
             f"⏳ *支付时限*: 官方倒计时 *15 分钟*（超时席位将被自动释放）\n\n"
-            f"👉 *点击下方链接立即还款付款*:\n"
-            f"🔗 [立即前往 KTMB 官方结账付款]({checkout_url})\n"
-            f"📋 [查看待支付订单列表]({history_url})\n\n"
-            f"💡 *提示*: 您也可以直接打开手机【KTMB App】➡️ 点击底部【My Tickets】直接拉起 FPX / 银行卡支付！"
+            f"👉 *完成付款方式（任选其一）*:\n"
+            f"📱 *方式一【手机 KTMB App (最推荐)】*:\n"
+            f"打开手机【KTMB Mobile App】➡️ 登录同账号 ➡️ 进入底部【My Tickets】或【Upcoming Trips】直接拉起 FPX 银行转账、Touch 'n Go 或信用卡完成支付！\n\n"
+            f"💻 *方式二【电脑/手机浏览器官网】*:\n"
+            f"登录 KTMB 官网后访问待出行与订单列表:\n"
+            f"🔗 [点击直达 KTMB 官网行程与订单列表]({upcoming_url})\n"
+            f"🌐 [KTMB 官网首页]({portal_url})\n\n"
+            f"💡 *提示*: KTMB 为单设备单会话安全架构，请直接在您手机的 KTMB App 或已登录官网中完成支付！"
         )
         return message
 
@@ -154,9 +159,10 @@ class TelegramTicketNotifier:
         trip_details: Dict[str, Any],
         passenger_name: str,
         raw_id: str,
-        passengers: Optional[Any] = None
+        passengers: Optional[Any] = None,
+        payment_url: Optional[str] = None
     ) -> bool:
-        message = self.format_message(booking_id, trip_details, passenger_name, raw_id, passengers)
+        message = self.format_message(booking_id, trip_details, passenger_name, raw_id, passengers, payment_url=payment_url)
         
         if not self.bot_token or not self.chat_id or self.session is None:
             logger.info(f"Notification alert (dry-run):\n{message}")

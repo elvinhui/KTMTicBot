@@ -28,8 +28,8 @@ def test_telegram_notifier_formatting():
     assert "KITS-998811" in message
     assert "EG9022" in message
     assert "95050510****" in message
-    assert "checkout?bookingId=KITS-998811" in message
-    assert "BookingHistory" in message
+    assert "UpcomingList" in message
+    assert "KTMB Mobile App" in message
     assert "950505105544" not in message
 
 def test_telegram_notifier_multi_passenger_formatting():

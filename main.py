@@ -548,7 +548,12 @@ def main():
             tg_listener.stop()
         if authenticator and browser_manager and browser_manager.page:
             try:
-                authenticator.logout(browser_manager.page)
+                # Do NOT log out if task was just successfully reserved!
+                # Logging out immediately destroys the server-side temporary booking session.
+                if task_config.status != TaskStatus.RESERVED:
+                    authenticator.logout(browser_manager.page)
+                else:
+                    logger.info("🔒 车票已锁定，保持 KTMB 登录态与会话有效，为您保留 15 分钟付款窗口！")
             except Exception:
                 pass
         if browser_manager:
