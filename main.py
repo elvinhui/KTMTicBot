@@ -293,6 +293,17 @@ def run_login_gui():
         email=settings.KTM_EMAIL,
         password=settings.KTM_PASSWORD
     )
+    # Check if already authenticated via persistent cookies
+    try:
+        page.goto(settings.BASE_URL)
+        if auth.verify_login(page):
+            print("\n🎉 检测到当前已是登录状态（已载入持久化会话凭据）！无需重新输入密码。")
+            mgr.save_storage_state("data/auth_state.json")
+            mgr.close()
+            return
+    except Exception:
+        pass
+
     login_url = settings.BASE_URL.rstrip("/") + "/Account/Login"
     try:
         page.goto(login_url)
