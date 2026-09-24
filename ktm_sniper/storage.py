@@ -15,7 +15,16 @@ class TaskRepository:
     Supports both One-Way and Round-Trip tasks.
     """
     def __init__(self, db_path: Optional[str] = None, encryptor: Optional[DataEncryptor] = None):
-        self.db_path = db_path or os.getenv("KTM_DB_PATH") or ("data/ktm_sniper.db" if os.path.isdir("data") else "ktm_sniper.db")
+        if db_path:
+            self.db_path = db_path
+        elif os.getenv("KTM_DB_PATH"):
+            self.db_path = os.getenv("KTM_DB_PATH")
+        elif os.path.isfile("data/ktm_sniper.db"):
+            self.db_path = "data/ktm_sniper.db"
+        elif os.path.isfile("ktm_sniper.db"):
+            self.db_path = "ktm_sniper.db"
+        else:
+            self.db_path = "data/ktm_sniper.db"
         parent_dir = os.path.dirname(os.path.abspath(self.db_path))
         if parent_dir:
             os.makedirs(parent_dir, exist_ok=True)
@@ -92,6 +101,20 @@ class TaskRepository:
                         created_at REAL
                     )
                 """)
+
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS saved_passengers (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT NOT NULL,
+                        id_number_encrypted TEXT NOT NULL,
+                        id_number_masked TEXT NOT NULL,
+                        gender TEXT NOT NULL,
+                        phone TEXT NOT NULL,
+                        email TEXT,
+                        created_at REAL,
+                        updated_at REAL
+                    )
+                """)
         finally:
             conn.close()
 
@@ -145,12 +168,37 @@ class TaskRepository:
                 ))
         finally:
             conn.close()
+
+        # Synchronize passengers into saved_passengers table
+        for p in config.passengers:
+            try:
+                self.save_passenger(p)
+            except Exception:
+                pass
+
         return task_id
 
     def get_task(self, task_id: str) -> Optional[SniperTaskConfig]:
         conn = self._get_connection()
         try:
             cursor = conn.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return self._row_to_config(row)
+        finally:
+            conn.close()
+
+    def get_latest_task(self) -> Optional[SniperTaskConfig]:
+        """
+        Retrieves the most recently updated or created task from SQLite.
+        Used on robot launch to restore the configured route and passengers.
+        """
+        conn = self._get_connection()
+        try:
+            cursor = conn.execute(
+                "SELECT * FROM tasks ORDER BY updated_at DESC, created_at DESC LIMIT 1"
+            )
             row = cursor.fetchone()
             if not row:
                 return None
@@ -166,6 +214,69 @@ class TaskRepository:
                 (TaskStatus.PENDING.value, TaskStatus.MONITORING.value)
             )
             return [self._row_to_config(r) for r in cursor.fetchall()]
+        finally:
+            conn.close()
+
+    def save_passenger(self, p: Passenger):
+        """
+        Saves or updates a passenger profile in SQLite.
+        """
+        encrypted_id = self.encryptor.encrypt(p.id_number)
+        masked_id = p.masked_id
+        now = time.time()
+        conn = self._get_connection()
+        try:
+            with conn:
+                cursor = conn.execute("SELECT id FROM saved_passengers WHERE name = ?", (p.name,))
+                row = cursor.fetchone()
+                if row:
+                    conn.execute("""
+                        UPDATE saved_passengers
+                        SET id_number_encrypted = ?, id_number_masked = ?, gender = ?, phone = ?, email = ?, updated_at = ?
+                        WHERE id = ?
+                    """, (encrypted_id, masked_id, p.gender, p.phone, p.email or "", now, row["id"]))
+                else:
+                    conn.execute("""
+                        INSERT INTO saved_passengers (name, id_number_encrypted, id_number_masked, gender, phone, email, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (p.name, encrypted_id, masked_id, p.gender, p.phone, p.email or "", now, now))
+        finally:
+            conn.close()
+
+    def get_saved_passengers(self) -> List[Passenger]:
+        """
+        Retrieves all saved passenger profiles from SQLite.
+        """
+        conn = self._get_connection()
+        passengers = []
+        try:
+            cursor = conn.execute(
+                "SELECT * FROM saved_passengers ORDER BY updated_at DESC, created_at DESC"
+            )
+            for row in cursor.fetchall():
+                try:
+                    decrypted_id = self.encryptor.decrypt(row["id_number_encrypted"])
+                except Exception:
+                    decrypted_id = row["id_number_masked"]
+                passengers.append(Passenger(
+                    name=row["name"],
+                    id_number=decrypted_id,
+                    gender=row["gender"],
+                    phone=row["phone"],
+                    email=row["email"] or ""
+                ))
+            return passengers
+        finally:
+            conn.close()
+
+    def clear_saved_passengers(self):
+        """
+        Clears all saved passenger profiles from SQLite.
+        """
+        conn = self._get_connection()
+        try:
+            with conn:
+                conn.execute("DELETE FROM saved_passengers")
         finally:
             conn.close()
 

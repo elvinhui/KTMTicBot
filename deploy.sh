@@ -21,12 +21,19 @@ echo "[1/3] Pushing latest code to GitHub..."
 git push origin main
 echo "      Done."
 
-# Step 1.5: Sync persistent session cookies (if available) to EC2
+# Step 1.5: Sync persistent session cookies & SQLite database (if available) to EC2
 if [ -f "data/auth_state.json" ]; then
   echo "      Syncing data/auth_state.json to EC2..."
   ssh -i "$EC2_KEY" -o StrictHostKeyChecking=no "$EC2_HOST" "mkdir -p $APP_DIR/data"
   scp -i "$EC2_KEY" -o StrictHostKeyChecking=no data/auth_state.json "$EC2_HOST:$APP_DIR/data/auth_state.json"
   echo "      Session credentials synced!"
+fi
+
+if [ -f "data/ktm_sniper.db" ]; then
+  echo "      Syncing data/ktm_sniper.db (SQLite tasks & passengers) to EC2..."
+  ssh -i "$EC2_KEY" -o StrictHostKeyChecking=no "$EC2_HOST" "mkdir -p $APP_DIR/data"
+  scp -i "$EC2_KEY" -o StrictHostKeyChecking=no data/ktm_sniper.db "$EC2_HOST:$APP_DIR/data/ktm_sniper.db"
+  echo "      SQLite database synced!"
 fi
 
 # Step 2: SSH into EC2, pull latest code, rebuild and restart containers

@@ -369,6 +369,10 @@ def main():
         run_login_gui()
         return
 
+    repo = TaskRepository()
+    saved_task = repo.get_latest_task()
+    saved_passengers = repo.get_saved_passengers()
+
     task_config: Optional[SniperTaskConfig] = None
 
     if args.config:
@@ -376,55 +380,96 @@ def main():
         if tasks:
             task_config = tasks[0]
             logger.info(f"已从 {args.config} 加载任务: {task_config.origin} -> {task_config.destination} ({task_config.date})")
+            repo.save_task(task_config)
     elif args.wizard:
         task_config = run_wizard()
-    elif args.origin and args.dest and args.date:
-        is_rt = args.round_trip or bool(args.return_date)
-        if is_rt and not args.return_date:
+        if task_config:
+            repo.save_task(task_config)
+    elif args.origin or args.dest or args.date:
+        # CLI parameters provided: merge with SQLite saved configuration if partial
+        base_origin = args.origin or (saved_task.origin if saved_task else None)
+        base_dest = args.dest or (saved_task.destination if saved_task else None)
+        base_date = args.date or (saved_task.date if saved_task else None)
+
+        if not (base_origin and base_dest and base_date):
+            print("💡 请提供完整的行程参数: --origin, --dest, --date (或使用 --wizard 交互向导)")
+            return
+
+        is_rt = args.round_trip or bool(args.return_date) or (saved_task.is_round_trip if saved_task else False)
+        ret_date = args.return_date or (saved_task.return_date if saved_task else None)
+        if is_rt and not ret_date:
             logger.error("启用往返模式 (--round-trip) 时必须通过 --return-date 指定返程日期！")
             return
 
+        # Passenger resolution: strictly CLI -> SQLite (no env or json)
         passengers = []
-        name_val = args.name or os.getenv("KTM_PASSENGER_NAME", "").strip()
-        ic_val = args.ic or os.getenv("KTM_PASSENGER_IC", "").strip()
-        phone_val = args.phone or os.getenv("KTM_PASSENGER_PHONE", "").strip() or "0123456789"
-        gender_val = args.gender or os.getenv("KTM_PASSENGER_GENDER", "").strip() or "Male"
-        if name_val and ic_val:
-            passengers.append(Passenger(
-                name=name_val,
-                id_number=ic_val,
-                gender=gender_val,
-                phone=phone_val
-            ))
+        if args.name and args.ic:
+            new_p = Passenger(
+                name=args.name.strip(),
+                id_number=args.ic.strip(),
+                gender=args.gender or "Male",
+                phone=args.phone or "0123456789"
+            )
+            passengers.append(new_p)
+            repo.save_passenger(new_p)
+        elif saved_task and saved_task.passengers:
+            passengers = list(saved_task.passengers)
+        elif saved_passengers:
+            passengers = list(saved_passengers)
+
         task_config = SniperTaskConfig(
-            origin=args.origin,
-            destination=args.dest,
-            date=args.date,
-            time_from=args.time_from,
-            time_to=args.time_to,
-            preferred_trains=args.train,
-            preferred_classes=args.class_name,
-            seat_preference=args.seat,
+            task_id=saved_task.task_id if saved_task else None,
+            origin=base_origin,
+            destination=base_dest,
+            date=base_date,
+            time_from=args.time_from if args.time_from != "00:00" else (saved_task.time_from if saved_task else "00:00"),
+            time_to=args.time_to if args.time_to != "23:59" else (saved_task.time_to if saved_task else "23:59"),
+            preferred_trains=args.train or (saved_task.preferred_trains if saved_task else []),
+            preferred_classes=args.class_name or (saved_task.preferred_classes if saved_task else []),
+            seat_preference=args.seat or (saved_task.seat_preference if saved_task else "Window"),
+            required_seats=len(passengers) or (saved_task.required_seats if saved_task else 1),
             passengers=passengers,
             is_round_trip=is_rt,
-            return_date=args.return_date,
-            return_time_from=args.return_time_from,
-            return_time_to=args.return_time_to
+            return_date=ret_date,
+            return_time_from=args.return_time_from if args.return_time_from != "00:00" else (saved_task.return_time_from if saved_task else "00:00"),
+            return_time_to=args.return_time_to if args.return_time_to != "23:59" else (saved_task.return_time_to if saved_task else "23:59"),
+            status=TaskStatus.MONITORING
         )
-    elif os.path.exists("tasks.json"):
-        tasks = load_from_json("tasks.json")
-        if tasks:
-            task_config = tasks[0]
-            logger.info(f"已从 tasks.json 加载任务: {task_config.origin} -> {task_config.destination} ({task_config.date})")
+        task_config.require_confirmation = not args.auto_lock
+        repo.save_task(task_config)
+        logger.info(f"💾 新设定的行程与乘客已同步持久化保存至 SQLite [{repo.db_path}]")
+
+    elif saved_task:
+        # Default run: extract directly from SQLite! (No JSON, no .ENV)
+        task_config = saved_task
+        task_config.status = TaskStatus.MONITORING
+        task_config.require_confirmation = not args.auto_lock
+        if not task_config.passengers and saved_passengers:
+            task_config.passengers = list(saved_passengers)
+            task_config.required_seats = len(saved_passengers)
+
+        passengers_desc = ", ".join([f"{p.name} ({p.masked_id})" for p in task_config.passengers]) if task_config.passengers else "未指定"
+        msg = (
+            f"📦 --- [SQLite 数据源] 已成功提取最近配置的抢票任务 ---\n"
+            f"• 数据库路径: {repo.db_path}\n"
+            f"• 出发地: {task_config.origin}\n"
+            f"• 目的地: {task_config.destination}\n"
+            f"• 出发日期: {task_config.date} ({task_config.time_from} - {task_config.time_to})\n"
+        )
+        if task_config.is_round_trip:
+            msg += f"• 返程日期: {task_config.return_date} ({task_config.return_time_from} - {task_config.return_time_to})\n"
+        msg += f"• 乘车人员: {passengers_desc}\n• 席位总数: {task_config.required_seats} 席 (偏好: {task_config.seat_preference})\n"
+        print(f"\n{msg}")
+        logger.info(f"📦 已从 SQLite 加载任务与乘客: {task_config.origin} -> {task_config.destination} ({task_config.date}) [{passengers_desc}]")
 
     if not task_config:
-        print("💡 未提供完整行程预选参数。请使用 --wizard 进入交互向导，或指定 --origin, --dest, --date 参数。")
-        print("例如: python main.py --origin \"KL Sentral\" --dest \"Butterworth\" --date \"2026-09-20\" --wizard")
+        print("💡 SQLite 数据库中暂未发现已存储的抢票行程。")
+        print("首次使用请指定参数（例如: python main.py --origin \"KL Sentral\" --dest \"Ipoh\" --date \"2026-10-05\" --name \"TAN JIA HUI\" --ic \"960217075045\"）")
+        print("或运行向导: python main.py --wizard")
+        print("设定完成后将自动永久固化保存在 SQLite 中，后续再次运行无需输入任何参数即可直接启动！\n")
         return
 
     task_config.require_confirmation = not args.auto_lock
-
-    repo = TaskRepository()
     repo.save_task(task_config)
 
     notifier = None

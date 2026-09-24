@@ -163,3 +163,66 @@ def test_sqlite_env_db_path(tmp_path, monkeypatch):
     assert repo.db_path == str(nested_db)
     assert nested_db.parent.exists()
 
+
+def test_sqlite_get_latest_task(tmp_path):
+    db_path = tmp_path / "test_latest.db"
+    repo = TaskRepository(str(db_path))
+
+    # Empty initially
+    assert repo.get_latest_task() is None
+
+    p1 = Passenger(name="First User", id_number="900101015555", gender="Male", phone="0111111111")
+    t1 = SniperTaskConfig(
+        origin="KL Sentral", destination="Ipoh", date="2026-10-01",
+        time_from="08:00", time_to="12:00", passengers=[p1]
+    )
+    repo.save_task(t1)
+
+    import time
+    time.sleep(0.01)
+
+    p2 = Passenger(name="Second User", id_number="920202026666", gender="Female", phone="0122222222")
+    t2 = SniperTaskConfig(
+        origin="Butterworth", destination="KL Sentral", date="2026-10-05",
+        time_from="14:00", time_to="18:00", passengers=[p2]
+    )
+    repo.save_task(t2)
+
+    latest = repo.get_latest_task()
+    assert latest is not None
+    assert latest.origin == "Butterworth"
+    assert latest.destination == "KL Sentral"
+    assert latest.date == "2026-10-05"
+    assert len(latest.passengers) == 1
+    assert latest.passengers[0].name == "Second User"
+    assert latest.passengers[0].id_number == "920202026666"
+
+
+def test_sqlite_saved_passengers_crud(tmp_path):
+    db_path = tmp_path / "test_passengers.db"
+    repo = TaskRepository(str(db_path))
+
+    assert len(repo.get_saved_passengers()) == 0
+
+    p = Passenger(name="TAN JIA HUI", id_number="960217075045", gender="Male", phone="0123456789")
+    repo.save_passenger(p)
+
+    saved = repo.get_saved_passengers()
+    assert len(saved) == 1
+    assert saved[0].name == "TAN JIA HUI"
+    assert saved[0].id_number == "960217075045"
+    assert saved[0].gender == "Male"
+    assert saved[0].phone == "0123456789"
+
+    # Update same passenger
+    p_updated = Passenger(name="TAN JIA HUI", id_number="960217075045", gender="Male", phone="0199999999")
+    repo.save_passenger(p_updated)
+    saved_after = repo.get_saved_passengers()
+    assert len(saved_after) == 1
+    assert saved_after[0].phone == "0199999999"
+
+    # Clear passengers
+    repo.clear_saved_passengers()
+    assert len(repo.get_saved_passengers()) == 0
+
+

@@ -181,31 +181,44 @@ class TelegramCommandHandler:
         try:
             current_task = self.engine.task
 
-            if field in ("origin", "from", "出发地"):
+            if field in ("origin", "from", "出发地", "出发站", "始发站"):
                 code, name = KTMStationRegistry.resolve_station(value)
                 new_task = dataclasses.replace(current_task, origin=name)
                 self.engine.update_task(new_task)
-                return f"✓ 出发地已更新为: *{name}* [{code}]"
+                return f"✓ 出发地已更新并写入 SQLite: *{name}* [{code}]"
 
-            elif field in ("dest", "destination", "to", "目的地"):
+            elif field in ("dest", "destination", "to", "目的地", "抵达地", "到达站", "终点站"):
                 code, name = KTMStationRegistry.resolve_station(value)
                 new_task = dataclasses.replace(current_task, destination=name)
                 self.engine.update_task(new_task)
-                return f"✓ 目的地已更新为: *{name}* [{code}]"
+                return f"✓ 目的地已更新并写入 SQLite: *{name}* [{code}]"
 
             elif field in ("date", "出发日期", "日期"):
                 norm_date = normalize_date(value)
                 new_task = dataclasses.replace(current_task, date=norm_date)
                 self.engine.update_task(new_task)
-                return f"✓ 出发日期已更新为: *{norm_date}*"
+                return f"✓ 出发日期已更新并写入 SQLite: *{norm_date}*"
 
-            elif field in ("time", "时段"):
-                times = value.replace(" ", "").split("-")
-                if len(times) != 2:
-                    return "⚠️ 时段格式错误，请输入例如 `08:00-14:00`。"
-                new_task = dataclasses.replace(current_task, time_from=times[0], time_to=times[1])
+            elif field in ("time", "时段", "出发时间", "时间"):
+                if "-" in value:
+                    times = value.replace(" ", "").split("-")
+                    new_task = dataclasses.replace(current_task, time_from=times[0], time_to=times[1])
+                    self.engine.update_task(new_task)
+                    return f"✓ 出发时段已更新并写入 SQLite: *{times[0]} - {times[1]}*"
+                else:
+                    new_task = dataclasses.replace(current_task, time_from=value.strip())
+                    self.engine.update_task(new_task)
+                    return f"✓ 最早出发时间已更新并写入 SQLite: *{value.strip()}*"
+
+            elif field in ("time_from", "depart_time", "最早出发"):
+                new_task = dataclasses.replace(current_task, time_from=value.strip())
                 self.engine.update_task(new_task)
-                return f"✓ 出发时段已更新为: *{times[0]} - {times[1]}*"
+                return f"✓ 最早出发时间已更新并写入 SQLite: *{value.strip()}*"
+
+            elif field in ("time_to", "arrive_time", "抵达时间", "最晚出发", "结束时段"):
+                new_task = dataclasses.replace(current_task, time_to=value.strip())
+                self.engine.update_task(new_task)
+                return f"✓ 最晚时段/抵达时间已更新并写入 SQLite: *{value.strip()}*"
 
             elif field in ("return_date", "ret_date", "返程日期"):
                 norm_ret_date = normalize_date(value)
@@ -359,7 +372,12 @@ class TelegramCommandHandler:
         current_task = self.engine.task
         new_task = dataclasses.replace(current_task, passengers=[], required_seats=1)
         self.engine.update_task(new_task)
-        return "✓ 已清空全部乘车人预填列表。如需添加，发送 `/add_passenger <姓名> <证件号>`。"
+        if hasattr(self.engine, "repository") and self.engine.repository:
+            try:
+                self.engine.repository.clear_saved_passengers()
+            except Exception:
+                pass
+        return "✓ 已清空全部乘车人预填列表并同步清除 SQLite。如需添加，发送 `/add_passenger <姓名> <证件号>`。"
 
     def _handle_help(self) -> str:
         return (
