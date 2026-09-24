@@ -170,3 +170,38 @@ def test_engine_round_trip_orchestration():
     assert reserver.reserve_seat.call_count == 2
     assert notifier.send_alert.call_count == 2
 
+
+def test_engine_run_in_browser_thread_cross_thread():
+    import threading
+    config = SniperTaskConfig(
+        origin="KL Sentral",
+        destination="Butterworth",
+        date="2026-09-20",
+        passengers=[Passenger(name="Ali", id_number="900101145566", gender="Male", phone="0123456789")]
+    )
+    engine = KTMSniperEngine(task=config)
+
+    def background_worker(out_container):
+        try:
+            # Simulate call from TelegramCommandListener thread
+            res = engine.run_in_browser_thread(lambda x: x * 2, 21, timeout=5.0)
+            out_container["result"] = res
+        except Exception as exc:
+            out_container["error"] = exc
+
+    container = {}
+    th = threading.Thread(target=background_worker, args=(container,))
+    th.start()
+
+    # Main thread processes actions
+    import time
+    for _ in range(50):
+        engine.process_pending_browser_actions()
+        if "result" in container or "error" in container:
+            break
+        time.sleep(0.02)
+
+    th.join(timeout=2.0)
+    assert container.get("result") == 42
+
+

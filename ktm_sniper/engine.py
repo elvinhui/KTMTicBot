@@ -2,6 +2,7 @@ import time
 import uuid
 import logging
 import threading
+import queue
 from typing import Optional, Dict, Any, List
 from ktm_sniper.models import SniperTaskConfig, TripInfo, TaskStatus
 from ktm_sniper.poller import AdaptivePoller
@@ -58,14 +59,67 @@ class KTMSniperEngine:
         self.total_cycles: int = 0
         self._browser_needs_update: bool = False
         self._lock = threading.Lock()
+        self._main_thread = threading.current_thread()
+        self._action_queue: queue.Queue = queue.Queue()
         self.last_found_trips: List[Any] = []
         self.selected_trip: Optional[Any] = None
         self.available_seats_cache: Dict[str, Any] = {}
         self.require_confirmation: bool = getattr(task, "require_confirmation", False)
 
+    def run_in_browser_thread(self, fn, *args, timeout: float = 60.0, **kwargs):
+        """
+        Executes a callable on the main thread where Playwright was initialized,
+        preventing greenlet 'Cannot switch to a different thread' errors when called
+        from background threads such as TelegramCommandListener.
+        """
+        if threading.current_thread() == self._main_thread:
+            return fn(*args, **kwargs)
+
+        res_queue = queue.Queue(maxsize=1)
+        self._action_queue.put((fn, args, kwargs, res_queue))
+        try:
+            success, val = res_queue.get(timeout=timeout)
+            if success:
+                return val
+            raise val
+        except queue.Empty:
+            raise TimeoutError("Browser action timed out waiting for main thread execution")
+
+    def process_pending_browser_actions(self):
+        """Processes any queued browser actions on the current (main) thread."""
+        while not self._action_queue.empty():
+            try:
+                fn, args, kwargs, res_queue = self._action_queue.get_nowait()
+                try:
+                    res = fn(*args, **kwargs)
+                    res_queue.put((True, res))
+                except Exception as exc:
+                    res_queue.put((False, exc))
+            except queue.Empty:
+                break
+
+    def wait_or_process_actions(self, duration: float):
+        """
+        Sleeps for `duration` seconds in small intervals, continuously processing
+        any pending browser actions requested by background threads.
+        """
+        end_time = time.time() + max(0.0, duration)
+        while time.time() < end_time and not getattr(self, "is_interrupted", False):
+            self.process_pending_browser_actions()
+            time.sleep(0.05)
+        self.process_pending_browser_actions()
+
     def fetch_seats_layout(self, train_no: str) -> Dict[str, Dict[str, List[str]]]:
         if self.browser_driver:
+            return self.run_in_browser_thread(self._fetch_seats_layout_sync, train_no)
+        return self._get_fallback_seats_layout()
+
+    def _fetch_seats_layout_sync(self, train_no: str) -> Dict[str, Dict[str, List[str]]]:
+        if self.browser_driver:
             return self.browser_driver.fetch_seats_layout(train_no, task=self.task)
+        return self._get_fallback_seats_layout()
+
+    def _get_fallback_seats_layout(self) -> Dict[str, Dict[str, List[str]]]:
         return {
             "B": {
                 "window": ["03A", "03D", "04A", "04D", "05A", "05D"],
@@ -78,6 +132,9 @@ class KTMSniperEngine:
         }
 
     def execute_real_booking(self, trip: Any, seat_no: str = "auto") -> Dict[str, Any]:
+        return self.run_in_browser_thread(self._execute_real_booking_sync, trip, seat_no)
+
+    def _execute_real_booking_sync(self, trip: Any, seat_no: str = "auto") -> Dict[str, Any]:
         train_no = getattr(trip, "train_no", trip.get("train_no") if isinstance(trip, dict) else "9044")
         if self.browser_driver and not self.browser_driver.is_logged_in() and self.authenticator:
             logger.info("🔐 正在为官方订座执行认证登录...")
@@ -138,6 +195,8 @@ class KTMSniperEngine:
         """
         Executes a single check-and-reserve evaluation cycle in the main thread.
         """
+        self.process_pending_browser_actions()
+
         if self.repository:
             self.repository.update_task_status(self.task.task_id, TaskStatus.MONITORING)
 
@@ -294,7 +353,7 @@ class KTMSniperEngine:
         cycles = 0
         while True:
             if self.is_paused:
-                time.sleep(1.0)
+                self.wait_or_process_actions(1.0)
                 continue
 
             cycles += 1
@@ -307,6 +366,7 @@ class KTMSniperEngine:
                 result = self.step()
                 if result:
                     if result.get("status") == "WAITING_CONFIRMATION":
+                        self.wait_or_process_actions(1.0)
                         continue
                     if self.task.is_round_trip:
                         logger.info(f"🎉 去程车票锁定成功 ({result.get('booking_id')})！正在自动无缝切换至返程票守护...")
@@ -339,7 +399,7 @@ class KTMSniperEngine:
                         self.is_paused = True
                         logger.info("⏸️ 双程车票均已锁定！守护已自动挂起为 PAUSED。")
                         while self.is_paused:
-                            time.sleep(3)
+                            self.wait_or_process_actions(3.0)
                         continue
                     else:
                         logger.info(f"🎉 车票已成功锁定 ({result.get('booking_id')})！已发送 Telegram 付款直达链接！")
@@ -348,23 +408,23 @@ class KTMSniperEngine:
                         self.is_paused = True
                         logger.info("⏸️ 车票已成功锁定！守护引擎已自动挂起为 PAUSED，等待用户完成付款。发送 /resume 可随时开启下一轮守护。")
                         while self.is_paused:
-                            time.sleep(3)
+                            self.wait_or_process_actions(3.0)
                         continue
                 self.consecutive_errors = 0
             except CircuitBreakerOpenException as e:
                 logger.warning(f"Circuit breaker open: {e}. Backing off.")
                 self.consecutive_errors += 1
                 delay = self.poller.get_backoff_delay(self.consecutive_errors)
-                time.sleep(delay)
+                self.wait_or_process_actions(delay)
                 continue
             except Exception as e:
                 logger.error(f"Encountered cycle error: {e}")
                 self.consecutive_errors += 1
                 delay = self.poller.get_backoff_delay(self.consecutive_errors)
-                time.sleep(delay)
+                self.wait_or_process_actions(delay)
                 continue
 
             delay = self.poller.get_next_delay()
-            time.sleep(delay)
+            self.wait_or_process_actions(delay)
 
         return None

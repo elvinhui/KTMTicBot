@@ -528,9 +528,14 @@ class TelegramCommandHandler:
                 json.dump(state, f, indent=2)
 
             if hasattr(self.engine, "browser_driver") and self.engine.browser_driver:
-                page = getattr(self.engine.browser_driver, "page", None)
-                if page and page.context:
-                    page.context.add_cookies(cookies_list)
+                def _inject():
+                    page = getattr(self.engine.browser_driver, "page", None)
+                    if page and page.context:
+                        page.context.add_cookies(cookies_list)
+                if hasattr(self.engine, "run_in_browser_thread"):
+                    self.engine.run_in_browser_thread(_inject)
+                else:
+                    _inject()
 
             return f"✓ 已成功更新并固化 {len(cookies_list)} 个会话 Cookie 至 `data/auth_state.json`！"
         except Exception as e:
