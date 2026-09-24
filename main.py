@@ -506,9 +506,10 @@ def main():
             else:
                 logger.warning("⚠️ 未配置 KTM_EMAIL/KTM_PASSWORD，将以游客模式运行（仅能搜索，无法预定）。")
 
-            logger.info("无头浏览器已就绪，正在预热加载 KITS 页面...")
+            logger.info("无头浏览器已就绪，正在预热加载 KITS 页面并检索车次列表...")
             browser_driver.navigate_to_booking()
             browser_driver.fill_search_criteria(task_config)
+            browser_driver.trigger_search()
         except Exception as e:
             logger.warning(f"启动无头浏览器失败: {e}。将自动降级至高拟态 API 模式。")
             browser_driver = None

@@ -1,7 +1,10 @@
+import logging
 import time
 from typing import List, Optional, Dict, Any
 from ktm_sniper.models import SniperTaskConfig, TripInfo
 from ktm_sniper.stations import KTMStationRegistry
+
+logger = logging.getLogger(__name__)
 
 class KTMBrowserDriver:
     """
@@ -14,21 +17,44 @@ class KTMBrowserDriver:
 
     def dismiss_modals(self):
         """
-        Dismisses advertisement modals or notification popups if present.
+        Dismisses advertisement modals, notification popups, or cookie consent banners if present.
         """
         for selector in [
-            "#CloseButtonAdvertisement",
             "#popupModalOkButton",
             "#popupModalCloseButton",
+            "#popupModal button",
+            ".cc-btn",
+            ".cc-dismiss",
+            ".cc-allow",
+            "a.cc-btn",
+            "#CloseButtonAdvertisement",
             "button:has-text('OK')",
-            "button:has-text('Close')"
+            "button:has-text('Close')",
+            "button:has-text('Accept')"
         ]:
             try:
                 locator = self.page.locator(selector).first
                 if locator.is_visible(timeout=1000):
-                    locator.click(timeout=1500)
+                    locator.click(timeout=1500, force=True)
             except Exception:
                 pass
+
+        try:
+            self.page.evaluate("""() => {
+                document.querySelectorAll('.cc-window, .cc-banner, .cc-overlay, #cookie-law-info-bar').forEach(el => el.remove());
+                const modal = document.getElementById('popupModal');
+                if (modal && (modal.classList.contains('show') || modal.getAttribute('data-show') === 'true')) {
+                    const btn = document.getElementById('popupModalOkButton') || document.getElementById('popupModalCloseButton') || modal.querySelector('button, .btn');
+                    if (btn) btn.click();
+                    else {
+                        modal.classList.remove('show');
+                        modal.style.display = 'none';
+                        document.querySelectorAll('.modal-backdrop').forEach(b => b.remove());
+                    }
+                }
+            }""")
+        except Exception:
+            pass
 
     def navigate_to_booking(self, timeout_ms: int = 30000):
         self.page.goto(self.base_url, timeout=timeout_ms)
@@ -181,13 +207,18 @@ class KTMBrowserDriver:
             """)
             if not triggered:
                 btn = self.page.locator("#btnSubmit, button:has-text('Search'), button:has-text('SEARCH'), button[type='submit']").first
-                btn.click(timeout=3000)
+                if btn.count() > 0:
+                    btn.click(timeout=3000, force=True)
 
             try:
                 self.page.wait_for_url("**/Trip**", timeout=15000)
             except Exception:
                 pass
             self.page.wait_for_load_state("networkidle", timeout=10000)
+            try:
+                self.page.wait_for_selector("tbody.depart-trips tr", state="visible", timeout=15000)
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -326,15 +357,28 @@ class KTMBrowserDriver:
                 self.fill_search_criteria(task)
                 self.trigger_search()
 
+            try:
+                self.page.wait_for_selector(f"tbody.depart-trips tr:has-text('{train_no}') .btn-seat-layout, tbody.depart-trips tr .btn-seat-layout", state="visible", timeout=15000)
+            except Exception:
+                pass
+
+            self.dismiss_modals()
             row = self.page.locator(f"tbody.depart-trips tr:has-text('{train_no}')").first
             if row.count() == 0:
-                row = self.page.locator(f"tr:has-text('{train_no}')").first
+                row = self.page.locator("tbody.depart-trips tr").first
 
             btn = row.locator(".btn-seat-layout, button:has-text('Pick Seats'), a:has-text('Pick Seats'), a:has-text('Select')").first
             if btn.count() > 0:
-                btn.click(timeout=5000)
+                try:
+                    btn.scroll_into_view_if_needed()
+                    btn.click(timeout=5000, force=True)
+                except Exception:
+                    btn.click(timeout=5000)
             else:
-                self.page.locator(f".btn-seat-layout[data-tripdata*='{train_no}']").first.click(timeout=5000)
+                try:
+                    self.page.locator(f".btn-seat-layout[data-tripdata*='{train_no}']").first.click(timeout=5000, force=True)
+                except Exception:
+                    self.page.locator(f".btn-seat-layout[data-tripdata*='{train_no}']").first.click(timeout=5000)
 
             self.page.wait_for_selector("#seatSelect", state="visible", timeout=10000)
             time.sleep(1.0)
@@ -388,36 +432,78 @@ class KTMBrowserDriver:
 
     def lock_seat_and_proceed(self, seat_no: str = "auto", train_no: Optional[str] = None, task: Optional[Any] = None) -> bool:
         """
-        Ensures seat selection modal is open, selects seat, confirms seat,
-        and proceeds to passenger details (/Book).
+        Ensures seat selection modal is open, selects seat (supporting Window/Aisle preferences
+        or specific seat numbers), confirms seat, and proceeds to passenger details (/Book).
         """
         try:
-            # If #seatSelect modal not open, open it
+            # 1. Ensure browser is on /Trip page
+            if "/Trip" not in (self.page.url or "") and task is not None:
+                self.navigate_to_booking()
+                self.fill_search_criteria(task)
+                self.trigger_search()
+
+            # 2. Dismiss any modal/cookie popups
+            self.dismiss_modals()
+
+            # 3. Open #seatSelect modal
             if not self.page.locator("#seatSelect").is_visible():
-                if train_no:
-                    self.fetch_seats_layout(train_no, task=task)
+                btn = self.page.locator(f"tbody.depart-trips tr:has-text('{train_no}') .btn-seat-layout, tbody.depart-trips tr .btn-seat-layout").first
+                if btn.count() > 0:
+                    btn.evaluate("e => e.click()")
                 else:
-                    btn = self.page.locator("tbody.depart-trips tr .btn-seat-layout").first
-                    if btn.count() > 0:
-                        btn.click(timeout=5000)
-                    self.page.wait_for_selector("#seatSelect", state="visible", timeout=10000)
+                    self.fetch_seats_layout(train_no or "", task=task)
+                self.page.wait_for_selector("#seatSelect", state="visible", timeout=10000)
+                time.sleep(1.0)
 
-            norm_seat = seat_no.strip().upper() if seat_no else "AUTO"
-            if norm_seat in ("AUTO", "ANY", "DEFAULT", ""):
-                seat_el = self.page.locator("#seatSelect .selectable-icon[data-selected='false']").first
-            else:
-                seat_el = self.page.locator(f"#seatSelect .selectable-icon[data-seat-no='{norm_seat}'], #seatSelect .selectable-icon[title*='{norm_seat}']").first
+            # 4. Smart Seat Selection via DOM click
+            pref = (seat_no or "AUTO").strip().upper()
+            target_seat_no = self.page.evaluate("""
+                (pref) => {
+                    const seats = Array.from(document.querySelectorAll('#seatSelect .selectable-icon[data-selected="false"]'));
+                    if (!seats.length) return null;
 
-            if seat_el.count() > 0:
-                seat_el.click(timeout=3000)
-            
-            self.page.locator("#confirmSeatBtn").click(timeout=5000)
+                    let chosen = null;
+                    if (pref === 'WINDOW') {
+                        chosen = seats.find(s => {
+                            const no = (s.getAttribute('data-seat-no') || s.getAttribute('title') || '').toUpperCase();
+                            return no.endsWith('A') || no.endsWith('D');
+                        });
+                    } else if (pref === 'AISLE') {
+                        chosen = seats.find(s => {
+                            const no = (s.getAttribute('data-seat-no') || s.getAttribute('title') || '').toUpperCase();
+                            return no.endsWith('B') || no.endsWith('C');
+                        });
+                    } else if (pref !== 'AUTO' && pref !== 'ANY' && pref !== 'DEFAULT' && pref !== '') {
+                        chosen = seats.find(s => {
+                            const no = (s.getAttribute('data-seat-no') || s.getAttribute('title') || '').toUpperCase();
+                            return no === pref || no.endsWith(pref);
+                        });
+                    }
+                    if (!chosen) chosen = seats[0];
+                    chosen.click();
+                    return chosen.getAttribute('data-seat-no') || chosen.getAttribute('title');
+                }
+            """, pref)
+
+            logger.info(f"💺 已选定座位: {target_seat_no} (偏好: {pref})")
+            time.sleep(1.0)
+
+            # 5. Confirm seat selection
+            try:
+                self.page.wait_for_selector("#confirmSeatBtn:not(.disabled-btn)", timeout=5000)
+            except Exception:
+                pass
+
+            confirm_btn = self.page.locator("#confirmSeatBtn").first
+            if confirm_btn.count() > 0:
+                confirm_btn.evaluate("e => e.click()")
             time.sleep(1.5)
 
+            # 6. Click PROCEED TO PASSENGER DETAILS
             proceed_btn = self.page.locator("button:has-text('PROCEED TO PASSENGER DETAILS'), .btn-passenger").first
             if proceed_btn.count() > 0:
-                proceed_btn.click(timeout=5000)
-            
+                proceed_btn.evaluate("e => e.click()")
+
             try:
                 self.page.wait_for_url("**/Book**", timeout=15000)
             except Exception:
