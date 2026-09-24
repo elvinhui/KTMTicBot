@@ -15,14 +15,38 @@ class KTMBrowserDriver:
         self.page = page
         self.base_url = base_url.rstrip("/")
 
+    def check_maintenance_modal(self) -> Optional[str]:
+        """
+        Checks if KTMB daily maintenance modal (scheduled 23:00 - 00:15 UTC+8) is active.
+        """
+        try:
+            return self.page.evaluate("""() => {
+                const modal = document.getElementById('popupModal');
+                if (modal && (modal.classList.contains('show') || window.getComputedStyle(modal).display !== 'none')) {
+                    const text = modal.innerText || '';
+                    if (text.toLowerCase().includes('maintenance')) {
+                        const body = document.getElementById('popupModalBody');
+                        return body ? body.innerText.trim() : text.trim();
+                    }
+                }
+                return null;
+            }""")
+        except Exception:
+            return None
+
     def dismiss_modals(self):
         """
         Dismisses advertisement modals, notification popups, or cookie consent banners if present.
+        Leaves system maintenance alerts intact so callers can detect scheduled downtime.
         """
+        # If active maintenance modal, do not blindly click
+        m_text = self.check_maintenance_modal()
+        if m_text:
+            return
+
         for selector in [
-            "#popupModalOkButton",
             "#popupModalCloseButton",
-            "#popupModal button",
+            "#popupModalOkButton",
             ".cc-btn",
             ".cc-dismiss",
             ".cc-allow",
@@ -34,8 +58,8 @@ class KTMBrowserDriver:
         ]:
             try:
                 locator = self.page.locator(selector).first
-                if locator.is_visible(timeout=1000):
-                    locator.click(timeout=1500, force=True)
+                if locator.is_visible(timeout=500):
+                    locator.click(timeout=1000, force=True)
             except Exception:
                 pass
 
@@ -44,12 +68,16 @@ class KTMBrowserDriver:
                 document.querySelectorAll('.cc-window, .cc-banner, .cc-overlay, #cookie-law-info-bar').forEach(el => el.remove());
                 const modal = document.getElementById('popupModal');
                 if (modal && (modal.classList.contains('show') || modal.getAttribute('data-show') === 'true')) {
-                    const btn = document.getElementById('popupModalOkButton') || document.getElementById('popupModalCloseButton') || modal.querySelector('button, .btn');
-                    if (btn) btn.click();
-                    else {
-                        modal.classList.remove('show');
-                        modal.style.display = 'none';
-                        document.querySelectorAll('.modal-backdrop').forEach(b => b.remove());
+                    const text = modal.innerText || '';
+                    if (!text.toLowerCase().includes('maintenance')) {
+                        const btn = document.getElementById('popupModalCloseButton') || document.getElementById('popupModalOkButton') || modal.querySelector('button, .btn');
+                        if (btn && window.getComputedStyle(btn).display !== 'none') {
+                            btn.click();
+                        } else {
+                            modal.classList.remove('show');
+                            modal.style.display = 'none';
+                            document.querySelectorAll('.modal-backdrop').forEach(b => b.remove());
+                        }
                     }
                 }
             }""")
@@ -447,12 +475,23 @@ class KTMBrowserDriver:
 
             # 3. Open #seatSelect modal
             if not self.page.locator("#seatSelect").is_visible():
+                m_init = self.check_maintenance_modal()
+                if m_init:
+                    raise RuntimeError(f"KTMB 官方系统维护中（每晚 23:00 - 00:15 例行维护，暂停订票与支付）：{m_init}")
+
                 btn = self.page.locator(f"tbody.depart-trips tr:has-text('{train_no}') .btn-seat-layout, tbody.depart-trips tr .btn-seat-layout").first
                 if btn.count() > 0:
-                    btn.evaluate("e => e.click()")
+                    btn.click(timeout=5000, force=True)
                 else:
                     self.fetch_seats_layout(train_no or "", task=task)
-                self.page.wait_for_selector("#seatSelect", state="visible", timeout=10000)
+
+                try:
+                    self.page.wait_for_selector("#seatSelect", state="visible", timeout=6000)
+                except Exception:
+                    m_text = self.check_maintenance_modal()
+                    if m_text:
+                        raise RuntimeError(f"KTMB 官方系统维护中（每晚 23:00 - 00:15 例行维护，暂停订票与支付）：{m_text}")
+                    raise
                 time.sleep(1.0)
 
             # 4. Smart Seat Selection via DOM click
@@ -512,7 +551,7 @@ class KTMBrowserDriver:
             return True
         except Exception as e:
             logger.warning(f"锁座流程推进失败: {e}")
-            return False
+            raise RuntimeError(f"{e}")
 
     def fill_and_submit_passenger_form(self, passengers: list) -> Dict[str, Any]:
         """
