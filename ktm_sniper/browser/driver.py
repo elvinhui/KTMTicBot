@@ -671,70 +671,103 @@ class KTMBrowserDriver:
             has_qr = False
 
             try:
-                # 4.1 Locate and click DuitNow QR option via JavaScript evaluation across all tags/text/images
+                # Save raw HTML for debugging and audit
+                try:
+                    with open("data/payment_page.html", "w", encoding="utf-8") as f:
+                        f.write(self.page.content())
+                except Exception:
+                    pass
+
+                # 4.1 Locate and click the exact DuitNow QR card using leaf nodes & images
                 click_result = self.page.evaluate("""
                     () => {
-                        const all = Array.from(document.querySelectorAll('*'));
-                        let target = null;
-                        for (const el of all) {
-                            const text = (el.innerText || el.textContent || '').trim();
-                            const alt = (el.getAttribute('alt') || '').toLowerCase();
-                            const src = (el.getAttribute('src') || '').toLowerCase();
-                            if (text === 'DuitNow QR' || text.includes('DuitNow') || alt.includes('duitnow') || src.includes('duitnow')) {
-                                target = el;
+                        // 1. Search for DuitNow image
+                        const images = Array.from(document.querySelectorAll('img'));
+                        let target = images.find(img => {
+                            const s = (img.src || '').toLowerCase();
+                            const a = (img.alt || '').toLowerCase();
+                            return s.includes('duitnow') || a.includes('duitnow');
+                        });
+
+                        // 2. Search for innermost text element (leaf node)
+                        if (!target) {
+                            const leafElements = Array.from(document.querySelectorAll('*')).filter(el => el.children.length === 0);
+                            target = leafElements.find(el => {
+                                const t = (el.innerText || el.textContent || '').trim().toLowerCase();
+                                return t === 'duitnow qr' || t === 'duitnow' || t.includes('duitnow');
+                            });
+                        }
+
+                        // 3. Fallback: Search for Touch 'n Go image or leaf
+                        if (!target) {
+                            target = images.find(img => (img.src || '').toLowerCase().includes('tng') || (img.alt || '').toLowerCase().includes('touch'));
+                        }
+
+                        if (!target) {
+                            return { found: false, reason: 'No DuitNow or TNG element found' };
+                        }
+
+                        // Find the enclosing clickable card/box
+                        let card = target;
+                        while (card && card !== document.body && card.tagName !== 'BODY') {
+                            const cl = (card.className || '').toString().toLowerCase();
+                            if (card.onclick || card.tagName === 'BUTTON' || card.tagName === 'A' || cl.includes('payment') || cl.includes('box') || cl.includes('card') || cl.includes('option') || cl.includes('col-')) {
                                 break;
                             }
+                            card = card.parentElement;
                         }
-                        if (!target) {
-                            for (const el of all) {
-                                const text = (el.innerText || el.textContent || '').trim();
-                                if (text.includes("Touch 'n Go")) {
-                                    target = el;
-                                    break;
-                                }
-                            }
+                        if (!card || card === document.body) {
+                            card = target.parentElement || target;
                         }
-                        if (target) {
-                            const card = target.closest('button, a, .payment-option, .box, .card, [class*="payment"], div[onclick]') || target.parentElement || target;
-                            card.scrollIntoView({ behavior: 'instant', block: 'center' });
-                            card.click();
-                            card.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-                            return { found: true, tag: card.tagName, text: target.innerText || '' };
+
+                        // Check for radio button inside card
+                        const radio = card.querySelector('input[type="radio"], input[type="checkbox"]');
+                        if (radio) {
+                            radio.click();
+                            radio.checked = true;
                         }
-                        return { found: false };
+
+                        card.scrollIntoView({ behavior: 'instant', block: 'center' });
+                        card.click();
+                        card.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                        return { found: true, tag: card.tagName, class: card.className, targetText: target.innerText || '' };
                     }
                 """)
                 logger.info(f"💳 官方支付方式点击状态: {click_result}")
 
                 if isinstance(click_result, dict) and click_result.get("found"):
                     time.sleep(1.5)
-                    # 4.2 If a Proceed / Pay button exists or becomes enabled, click it
+
+                    # 4.2 If a Pay / Proceed button exists or appears, click it (ignoring Cancel)
                     submitted = self.page.evaluate("""
                         () => {
                             const buttons = Array.from(document.querySelectorAll('button, a, input[type="submit"], input[type="button"]'));
                             for (const btn of buttons) {
                                 const t = (btn.innerText || btn.value || '').trim().toUpperCase();
-                                if (t.includes('PAY') || t.includes('PROCEED') || t.includes('CONFIRM') || t.includes('CONTINUE')) {
+                                if (t.includes('CANCEL') || t.includes('BACK')) {
+                                    continue;
+                                }
+                                if (t === 'PAY' || t.includes('PAY') || t.includes('PROCEED') || t.includes('CONFIRM') || t.includes('CONTINUE')) {
                                     if (btn.offsetParent !== null && !btn.disabled) {
                                         btn.scrollIntoView({ behavior: 'instant', block: 'center' });
                                         btn.click();
-                                        return true;
+                                        return { clicked: true, text: t };
                                     }
                                 }
                             }
-                            return false;
+                            return { clicked: false };
                         }
                     """)
                     logger.info(f"💳 确认提交支付按钮触发状态: {submitted}")
-                    time.sleep(2.5)
+                    time.sleep(3.0)
 
                     try:
                         self.page.wait_for_load_state("networkidle", timeout=6000)
                     except Exception:
                         pass
 
-                    # 4.3 Look for the rendered QR code element
-                    qr_elem = self.page.locator("img[src*='data:image'], img[src*='qr' i], img[src*='duitnow' i], canvas, #qrCode, .qr-code, #qrImage, .duitnow-qr").first
+                    # 4.3 Look for genuine QR code element (canvas or data:image QR)
+                    qr_elem = self.page.locator("canvas, img[src*='data:image'], #qrCode img, .qr-code img, #qrImage, .modal-content canvas, .modal-content img").first
                     if qr_elem.is_visible(timeout=3000):
                         logger.info("📸 检测到官方支付二维码，正在精准截图...")
                         qr_elem.screenshot(path=qr_screenshot_path)
