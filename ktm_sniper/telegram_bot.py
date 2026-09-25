@@ -503,6 +503,16 @@ class TelegramCommandHandler:
                 except Exception as ex:
                     logger.warning(f"发送 DuitNow 二维码图片失败: {ex}")
 
+            # Automatically logout on EC2 to release KTMB single-login lock immediately
+            try:
+                driver = getattr(self.engine, "browser_driver", None)
+                auth = getattr(self.engine, "authenticator", None)
+                if auth and driver and getattr(driver, "page", None):
+                    logger.info("🔓 已发送支付二维码至 Telegram，正在自动登出 EC2 会话以释放 KTMB 单点登录锁...")
+                    auth.logout(driver.page)
+            except Exception as ex:
+                logger.warning(f"发送二维码后自动登出 EC2 异常: {ex}")
+
             return (
                 f"🎉 *【KTMB 官方席位锁定成功！】* 🎉\n\n"
                 f"• *官方订单号*: `{booking_id}`\n"
