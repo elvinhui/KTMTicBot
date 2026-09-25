@@ -669,19 +669,29 @@ class KTMBrowserDriver:
             qr_screenshot_path = "data/payment_qr.png"
             os.makedirs("data", exist_ok=True)
             has_qr = False
+            gateway_url = None
 
             try:
-                # Save raw HTML for debugging and audit
+                # Save pre-payment HTML for debugging and audit
                 try:
                     with open("data/payment_page.html", "w", encoding="utf-8") as f:
                         f.write(self.page.content())
                 except Exception:
                     pass
 
-                # 4.1 Locate and click the exact DuitNow QR card using leaf nodes & images
+                # 4.1 Locate and click the exact DuitNow QR option
+                # KTMB KITS payment page uses deterministic ID #btnGoPaymentDuitNow
                 click_result = self.page.evaluate("""
                     () => {
-                        // 1. Search for DuitNow image
+                        const directBtn = document.querySelector('#btnGoPaymentDuitNow');
+                        if (directBtn) {
+                            directBtn.scrollIntoView({ behavior: 'instant', block: 'center' });
+                            directBtn.click();
+                            directBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                            return { found: true, tag: directBtn.tagName, id: 'btnGoPaymentDuitNow' };
+                        }
+
+                        // Fallback: Search for DuitNow image or text
                         const images = Array.from(document.querySelectorAll('img'));
                         let target = images.find(img => {
                             const s = (img.src || '').toLowerCase();
@@ -689,7 +699,6 @@ class KTMBrowserDriver:
                             return s.includes('duitnow') || a.includes('duitnow');
                         });
 
-                        // 2. Search for innermost text element (leaf node)
                         if (!target) {
                             const leafElements = Array.from(document.querySelectorAll('*')).filter(el => el.children.length === 0);
                             target = leafElements.find(el => {
@@ -698,16 +707,10 @@ class KTMBrowserDriver:
                             });
                         }
 
-                        // 3. Fallback: Search for Touch 'n Go image or leaf
                         if (!target) {
-                            target = images.find(img => (img.src || '').toLowerCase().includes('tng') || (img.alt || '').toLowerCase().includes('touch'));
+                            return { found: false, reason: 'No DuitNow element found' };
                         }
 
-                        if (!target) {
-                            return { found: false, reason: 'No DuitNow or TNG element found' };
-                        }
-
-                        // Find the enclosing clickable card/box
                         let card = target;
                         while (card && card !== document.body && card.tagName !== 'BODY') {
                             const cl = (card.className || '').toString().toLowerCase();
@@ -720,7 +723,6 @@ class KTMBrowserDriver:
                             card = target.parentElement || target;
                         }
 
-                        // Check for radio button inside card
                         const radio = card.querySelector('input[type="radio"], input[type="checkbox"]');
                         if (radio) {
                             radio.click();
@@ -741,13 +743,20 @@ class KTMBrowserDriver:
                     # 4.2 If a Pay / Proceed button exists or appears, click it (ignoring Cancel)
                     submitted = self.page.evaluate("""
                         () => {
+                            const proceedBtn = document.querySelector('#btnProceedToPayment');
+                            if (proceedBtn && proceedBtn.offsetParent !== null && !proceedBtn.disabled) {
+                                proceedBtn.scrollIntoView({ behavior: 'instant', block: 'center' });
+                                proceedBtn.click();
+                                return { clicked: true, text: proceedBtn.innerText || 'btnProceedToPayment' };
+                            }
+
                             const buttons = Array.from(document.querySelectorAll('button, a, input[type="submit"], input[type="button"]'));
                             for (const btn of buttons) {
                                 const t = (btn.innerText || btn.value || '').trim().toUpperCase();
                                 if (t.includes('CANCEL') || t.includes('BACK')) {
                                     continue;
                                 }
-                                if (t === 'PAY' || t.includes('PAY') || t.includes('PROCEED') || t.includes('CONFIRM') || t.includes('CONTINUE')) {
+                                if (t === 'PAY' || t.includes('PAY') || t.includes('PROCEED') || t.includes('CONFIRM') || t.includes('CONTINUE') || t.includes('GATEWAY')) {
                                     if (btn.offsetParent !== null && !btn.disabled) {
                                         btn.scrollIntoView({ behavior: 'instant', block: 'center' });
                                         btn.click();
@@ -759,23 +768,126 @@ class KTMBrowserDriver:
                         }
                     """)
                     logger.info(f"💳 确认提交支付按钮触发状态: {submitted}")
-                    time.sleep(3.0)
+
+                    # 4.3 Wait for payment gateway / countdown page to load
+                    # Gateway may open in current page or popup tab
+                    time.sleep(2.0)
+                    all_pages = self.page.context.pages
+                    target_page = all_pages[-1] if len(all_pages) > 1 else self.page
 
                     try:
-                        self.page.wait_for_load_state("networkidle", timeout=6000)
+                        target_page.wait_for_load_state("domcontentloaded", timeout=10000)
                     except Exception:
                         pass
 
-                    # 4.3 Look for genuine QR code element (canvas or data:image QR)
-                    qr_elem = self.page.locator("canvas, img[src*='data:image'], #qrCode img, .qr-code img, #qrImage, .modal-content canvas, .modal-content img").first
-                    if qr_elem.is_visible(timeout=3000):
-                        logger.info("📸 检测到官方支付二维码，正在精准截图...")
-                        qr_elem.screenshot(path=qr_screenshot_path)
+                    # Save gateway page HTML for audit
+                    try:
+                        with open("data/gateway_page.html", "w", encoding="utf-8") as f:
+                            f.write(target_page.content())
+                    except Exception:
+                        pass
+
+                    # 4.4 Polling loop for QR Code & Payment Gateway (up to 15 seconds)
+                    # Scans main frame and all child iframes for canvas, SVG, or QR images
+                    logger.info("🔍 正在跨 Frame 定位 DuitNow 二维码 / 支付网关元素...")
+                    qr_found = False
+
+                    for poll_sec in range(1, 16):
+                        # Check context pages
+                        pages_to_check = self.page.context.pages
+                        for p in pages_to_check:
+                            if qr_found:
+                                break
+
+                            # Check all frames in page
+                            frames_to_check = p.frames
+                            for frame_idx, frame in enumerate(frames_to_check):
+                                if qr_found:
+                                    break
+
+                                # Check for iframe external URL
+                                if frame != p.main_frame and frame.url and frame.url.startswith("http"):
+                                    if not gateway_url:
+                                        gateway_url = frame.url
+                                        logger.info(f"🌐 捕获到支付网关外链 URL: {gateway_url}")
+
+                                # 1. Search for QR canvas / svg / img inside this frame
+                                qr_candidates = [
+                                    "canvas",
+                                    "svg:has(rect), svg:has(path)",
+                                    "img[src*='qr'], img[src*='QR'], img[src*='duitnow'], img[src*='paynet'], img[src*='data:image']",
+                                    "#qrCode img, .qrcode img, .qr-code img, #qrImage, .qr-image img, #duitnow-qr",
+                                    ".qrcode, #qrcode, .qr-code, #qrCode",
+                                ]
+
+                                for selector in qr_candidates:
+                                    try:
+                                        matches = frame.locator(selector)
+                                        count = matches.count()
+                                        for idx in range(count):
+                                            loc = matches.nth(idx)
+                                            if not loc.is_visible():
+                                                continue
+                                            box = loc.bounding_box()
+                                            if not box or box["width"] < 60 or box["height"] < 60:
+                                                continue
+
+                                            # We found a visible QR element with adequate dimensions!
+                                            logger.info(
+                                                f"📸 成功定位 DuitNow 二维码！Frame: [{frame.name or frame.url}], "
+                                                f"选择器: '{selector}', 尺寸: {int(box['width'])}x{int(box['height'])} (耗时 {poll_sec}s)"
+                                            )
+                                            loc.scroll_into_view_if_needed(timeout=2000)
+                                            time.sleep(0.5)
+                                            loc.screenshot(path=qr_screenshot_path)
+                                            if os.path.exists(qr_screenshot_path) and os.path.getsize(qr_screenshot_path) > 2000:
+                                                qr_found = True
+                                                has_qr = True
+                                                break
+                                    except Exception:
+                                        continue
+
+                        if qr_found:
+                            break
+
+                        # If after 6 seconds no QR element is found, check if an iframe can be captured
+                        if poll_sec >= 6 and not qr_found:
+                            try:
+                                iframes = target_page.locator("iframe")
+                                for ifr_idx in range(iframes.count()):
+                                    ifr = iframes.nth(ifr_idx)
+                                    if ifr.is_visible():
+                                        box = ifr.bounding_box()
+                                        if box and box["width"] > 200 and box["height"] > 200:
+                                            src_val = ifr.get_attribute("src") or ""
+                                            if src_val.startswith("http") and not gateway_url:
+                                                gateway_url = src_val
+                                            logger.info(f"📸 捕获到支付网关 iframe (尺寸 {int(box['width'])}x{int(box['height'])}), 正在截图...")
+                                            ifr.screenshot(path=qr_screenshot_path)
+                                            if os.path.exists(qr_screenshot_path) and os.path.getsize(qr_screenshot_path) > 3000:
+                                                has_qr = True
+                                                break
+                            except Exception:
+                                pass
+
+                        time.sleep(1.0)
+
+                    # 4.5 Fallback: if no element screenshot succeeded, take a full page screenshot
+                    if not has_qr or not os.path.exists(qr_screenshot_path) or os.path.getsize(qr_screenshot_path) < 2000:
+                        logger.info("ℹ️ 未能隔离单个二维码元素，截取网关完整页面作为凭据...")
+                        target_page.screenshot(path=qr_screenshot_path, full_page=True)
                         has_qr = True
-                    else:
-                        # Full page screenshot which now shows the selected payment state or QR modal
-                        self.page.screenshot(path=qr_screenshot_path, full_page=True)
-                        has_qr = True
+
+                    # Update booking ID & checkout URL from final page/url
+                    final_url = target_page.url
+                    m_final = re.search(r"bookingId=([A-Za-z0-9\-_]+)", final_url, re.IGNORECASE)
+                    if m_final:
+                        official_id = m_final.group(1)
+
+                    if gateway_url:
+                        checkout_url = gateway_url
+                    elif "payment" in final_url.lower() or "checkout" in final_url.lower() or "book" in final_url.lower():
+                        checkout_url = final_url
                 else:
                     if os.path.exists(screenshot_path):
                         shutil.copyfile(screenshot_path, qr_screenshot_path)
