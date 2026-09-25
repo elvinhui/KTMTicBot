@@ -14,6 +14,7 @@ services:
       - POLL_JITTER=1.5
       - KTM_EMAIL=${KTM_EMAIL}
       - KTM_PASSWORD=${KTM_PASSWORD}
+      - KTM_ENCRYPTION_KEY=${KTM_ENCRYPTION_KEY}
     volumes:
       - ./data:/app/data
     ipc: host  # Recommended for Chromium in Docker to avoid /dev/shm OOM issues

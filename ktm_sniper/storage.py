@@ -374,16 +374,18 @@ class TaskRepository:
         except Exception:
             passengers_raw = []
 
-        passengers = [
-            Passenger(
+        passengers = []
+        for p in passengers_raw:
+            id_val = p.get("id_number", "")
+            if id_val.startswith("gAAAAA"):
+                id_val = self.encryptor.decrypt(id_val)
+            passengers.append(Passenger(
                 name=p["name"],
-                id_number=p["id_number"],
+                id_number=id_val,
                 gender=p["gender"],
                 phone=p["phone"],
                 email=p.get("email", "")
-            )
-            for p in passengers_raw
-        ]
+            ))
 
         # Extract optional round trip fields safely
         keys = row.keys()

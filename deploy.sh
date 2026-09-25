@@ -36,6 +36,14 @@ if [ -f "data/ktm_sniper.db" ]; then
   echo "      SQLite database synced!"
 fi
 
+if [ -f ".ktm_key" ]; then
+  echo "      Syncing .ktm_key encryption key to EC2..."
+  ssh -i "$EC2_KEY" -o StrictHostKeyChecking=no "$EC2_HOST" "mkdir -p $APP_DIR/data"
+  scp -i "$EC2_KEY" -o StrictHostKeyChecking=no .ktm_key "$EC2_HOST:$APP_DIR/data/.ktm_key"
+  scp -i "$EC2_KEY" -o StrictHostKeyChecking=no .ktm_key "$EC2_HOST:$APP_DIR/.ktm_key"
+  echo "      Encryption key synced!"
+fi
+
 # Step 2: SSH into EC2, pull latest code, rebuild and restart containers
 echo "[2/3] Deploying to EC2..."
 ssh -i "$EC2_KEY" -o StrictHostKeyChecking=no "$EC2_HOST" bash <<'REMOTE'

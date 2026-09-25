@@ -25,7 +25,10 @@ class KTMSeatReserver:
             raise ValueError(f"Invalid gender: '{p_data['gender']}'. Must be 'Male' or 'Female'.")
 
         # Validate ID (MyKad or Passport)
-        raw_id = re.sub(r"[^A-Za-z0-9]", "", str(p_data["id_number"]))
+        id_str = str(p_data["id_number"]).strip()
+        if id_str.startswith("gAAAAA"):
+            raise ValueError("乘车人证件号仍为密文，解密失败！请检查环境变量 KTM_ENCRYPTION_KEY 或 .ktm_key 密钥文件。")
+        raw_id = re.sub(r"[^A-Za-z0-9]", "", id_str)
         if len(raw_id) < 5 or len(raw_id) > 20:
             raise ValueError(f"Invalid ID number: '{p_data['id_number']}'.")
 

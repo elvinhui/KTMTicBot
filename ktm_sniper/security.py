@@ -109,19 +109,32 @@ class DataEncryptor:
         if env_key:
             return env_key.strip().encode("utf-8")
 
-        # 2. Keyfile storage
-        if os.path.exists(self.key_file):
-            with open(self.key_file, "rb") as f:
-                return f.read().strip()
+        # 2. Keyfile storage (check self.key_file, data/.ktm_key, and /app/data/.ktm_key)
+        candidates = [
+            self.key_file,
+            os.path.join("data", os.path.basename(self.key_file)),
+            os.path.join("/app/data", os.path.basename(self.key_file))
+        ]
+        for p in candidates:
+            if os.path.exists(p):
+                try:
+                    with open(p, "rb") as f:
+                        content = f.read().strip()
+                        if content:
+                            return content
+                except Exception:
+                    pass
 
         # 3. Generate new key
         if HAS_FERNET:
             new_key = Fernet.generate_key()
-            try:
-                with open(self.key_file, "wb") as f:
-                    f.write(new_key)
-            except Exception:
-                pass
+            for p in [self.key_file, os.path.join("data", os.path.basename(self.key_file))]:
+                try:
+                    os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
+                    with open(p, "wb") as f:
+                        f.write(new_key)
+                except Exception:
+                    pass
             return new_key
         else:
             return b"0" * 32
