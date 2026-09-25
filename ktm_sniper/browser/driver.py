@@ -652,10 +652,15 @@ class KTMBrowserDriver:
                 except Exception:
                     pass
 
-            if not official_id:
-                official_id = f"KITS-{int(time.time())}"
-
-            checkout_url = current_url if ("checkout" in current_url.lower() or "book" in current_url.lower()) else f"{self.base_url}/Payment/Checkout?bookingId={official_id}"
+            # Determine payment/checkout URL:
+            # Note: '/Book' is an internal POST-only endpoint on KTMB. Visiting '/Book' via GET returns HTTP 405 Method Not Allowed.
+            # Never return a URL ending with or equal to '/Book'.
+            if "checkout" in current_url.lower() or "payment" in current_url.lower():
+                checkout_url = current_url
+            elif official_id and not official_id.startswith("KITS-"):
+                checkout_url = f"{self.base_url}/Payment/Checkout?bookingId={official_id}"
+            else:
+                checkout_url = f"{self.base_url}/Booking/UpcomingList"
 
             logger.info(f"🎉 KTMB 官方订单生成成功！订单编号: {official_id}, 支付页面: {checkout_url}")
             return {

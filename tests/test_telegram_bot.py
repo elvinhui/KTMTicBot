@@ -220,3 +220,19 @@ def test_command_handler_cancel_selection(sample_engine):
     assert sample_engine.selected_trip is None
     assert len(sample_engine.last_found_trips) == 0
     assert sample_engine.is_paused is False
+
+
+def test_command_handler_seat_avoids_book_405(sample_engine):
+    handler = TelegramCommandHandler(engine=sample_engine, authorized_chat_id="1682009086")
+    sample_engine.selected_trip = {"train_no": "9124", "train_class": "ETS Gold", "departure_time": "08:05"}
+    sample_engine.execute_real_booking = MagicMock(return_value={
+        "status": "SUCCESS",
+        "booking_id": "KITS-1790307949",
+        "payment_url": "https://online.ktmb.com.my/Book"  # Dangerous 405 URL
+    })
+
+    res = handler.handle_message(chat_id="1682009086", text="/seat 11A")
+    assert "https://online.ktmb.com.my/Book)" not in res
+    assert "UpcomingList" in res
+    assert "KTMB Mobile App" in res
+

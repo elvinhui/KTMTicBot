@@ -464,7 +464,15 @@ class TelegramCommandHandler:
             t_cls = getattr(trip, "train_class", trip.get("train_class") if isinstance(trip, dict) else "ETS Gold")
             dep_time = getattr(trip, "departure_time", trip.get("departure_time") if isinstance(trip, dict) else "")
             booking_id = res.get("booking_id", f"KITS-{t_no}")
-            pay_url = res.get("payment_url", f"https://online.ktmb.com.my/Payment/Checkout?bookingId={booking_id}")
+            pay_url = res.get("payment_url", "")
+            upcoming_url = "https://online.ktmb.com.my/Booking/UpcomingList"
+
+            # Guard against invalid /Book 405 link
+            if not pay_url or pay_url.rstrip("/").lower().endswith("/book"):
+                if booking_id and not booking_id.startswith("KITS-"):
+                    pay_url = f"https://online.ktmb.com.my/Payment/Checkout?bookingId={booking_id}"
+                else:
+                    pay_url = upcoming_url
 
             # Reset selection state
             self.engine.selected_trip = None
@@ -475,15 +483,19 @@ class TelegramCommandHandler:
                 p_name = self.engine.task.passengers[0].name
 
             return (
-                f"🎉 *【KTMB 官方订单生成成功！】* 🎉\n\n"
+                f"🎉 *【KTMB 官方席位锁定成功！】* 🎉\n\n"
                 f"• *官方订单号*: `{booking_id}`\n"
                 f"• *选定座位*: `{seat_choice}`\n"
                 f"• *车次等级*: *{t_no}* ({t_cls})\n"
                 f"• *发车时间*: `{dep_time}`\n"
                 f"• *乘车人*: {p_name}\n"
-                f"• *支付时限*: 官方倒计时 *15 分钟*\n\n"
-                f"👉 [立即前往 KTMB 官方结账付款]({pay_url})\n\n"
-                f"💡 您也可以打开手机【KTMB App】在【My Tickets】直接完成 FPX 支付！"
+                f"• *支付时限*: 官方倒计时 *15 分钟*（超时席位自动释放）\n\n"
+                f"📱 *推荐支付方式【手机 KTMB App (最顺畅)】*:\n"
+                f"打开手机【KTMB Mobile App】➡️ 登录同账号 ➡️ 进入底部【My Tickets】或【Upcoming】直接拉起 FPX 银行转账、Touch 'n Go 或信用卡完成支付！\n\n"
+                f"💻 *网页支付方式【KTMB 官网】*:\n"
+                f"🔗 [点击前往待支付订单列表 (Upcoming Trips)]({upcoming_url})\n"
+                f"👉 [官网直接付款链接]({pay_url})\n\n"
+                f"⚠️ *特别提醒*: 请勿直接在浏览器刷新或访问 /Book（KTMB 官方会拦截并报 405）。请在 KTMB App 或官网待出行列表中点击 Pay。"
             )
         except Exception as e:
             return f"❌ 预订下单失败: {e}\n建议回复 `/seat auto` 重试或回复 `/cancel` 继续监控。"
