@@ -652,9 +652,10 @@ class KTMBrowserDriver:
                 except Exception:
                     pass
 
+            if not official_id:
+                official_id = f"KITS-{int(time.time())}"
+
             # Determine payment/checkout URL:
-            # Note: '/Book' is an internal POST-only endpoint on KTMB. Visiting '/Book' via GET returns HTTP 405 Method Not Allowed.
-            # Never return a URL ending with or equal to '/Book'.
             if "checkout" in current_url.lower() or "payment" in current_url.lower():
                 checkout_url = current_url
             elif official_id and not official_id.startswith("KITS-"):
@@ -662,11 +663,51 @@ class KTMBrowserDriver:
             else:
                 checkout_url = f"{self.base_url}/Booking/UpcomingList"
 
+            # Step 4: Automatically select DuitNow QR to display the payment QR code
+            qr_screenshot_path = "data/payment_qr.png"
+            import os
+            os.makedirs("data", exist_ok=True)
+            has_qr = False
+
+            try:
+                duitnow_opt = self.page.locator("text='DuitNow QR', img[src*='duitnow' i], [data-payment-method*='duitnow' i]").first
+                if duitnow_opt.is_visible(timeout=3000):
+                    logger.info("💳 正在选择 DuitNow QR 官方支付方式...")
+                    duitnow_opt.click()
+                    time.sleep(1.0)
+
+                    pay_btn = self.page.locator("button:has-text('PAY'), button:has-text('PROCEED'), input[value*='Pay' i], #btnPayNow").first
+                    if pay_btn.is_visible(timeout=2000):
+                        logger.info("💳 点击确认调起 DuitNow QR 码...")
+                        pay_btn.click()
+                        time.sleep(2.0)
+
+                    qr_elem = self.page.locator("img[src*='qr' i], img[src*='duitnow' i], canvas, #qrCode, .qr-code").first
+                    if qr_elem.is_visible(timeout=3000):
+                        logger.info("📸 检测到官方支付二维码，正在精准截图...")
+                        qr_elem.screenshot(path=qr_screenshot_path)
+                        has_qr = True
+                    else:
+                        self.page.screenshot(path=qr_screenshot_path, full_page=True)
+                        has_qr = True
+                else:
+                    if os.path.exists(screenshot_path):
+                        import shutil
+                        shutil.copyfile(screenshot_path, qr_screenshot_path)
+                        has_qr = True
+            except Exception as e:
+                logger.warning(f"调起 DuitNow QR 异常: {e}")
+                if os.path.exists(screenshot_path):
+                    import shutil
+                    shutil.copyfile(screenshot_path, qr_screenshot_path)
+                    has_qr = True
+
             logger.info(f"🎉 KTMB 官方订单生成成功！订单编号: {official_id}, 支付页面: {checkout_url}")
             return {
                 "status": "SUCCESS",
                 "booking_id": official_id,
-                "payment_url": checkout_url
+                "payment_url": checkout_url,
+                "payment_qr": qr_screenshot_path if has_qr else None
             }
         except Exception as exc:
             logger.error(f"❌ 官方乘车人表单提交异常: {exc}")

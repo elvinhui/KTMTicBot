@@ -81,6 +81,8 @@ class TelegramCommandHandler:
             response = self._handle_seat(parts[1:])
         elif command in ("/cancel", "取消", "放弃"):
             response = self._handle_cancel_selection()
+        elif command in ("/logout", "登出", "退出登录", "释放锁"):
+            response = self._handle_logout()
         elif command in ("/cookie", "/set_cookie", "更新cookie"):
             response = self._handle_set_cookie(clean_text)
         elif command.isdigit() and getattr(self.engine, "last_found_trips", None):
@@ -398,6 +400,7 @@ class TelegramCommandHandler:
             "⏸️ *运行控制*:\n"
             "• `/pause` - 暂停监听 (节省服务器请求与流量)\n"
             "• `/resume` - 恢复监听\n"
+            "• `/logout` - 释放 KTMB 官方登录锁 (方便手机 App 或其他设备随时登录)\n"
             "• `/help` - 呼出本帮助菜单"
         )
 
@@ -466,6 +469,7 @@ class TelegramCommandHandler:
             booking_id = res.get("booking_id", f"KITS-{t_no}")
             pay_url = res.get("payment_url", "")
             upcoming_url = "https://online.ktmb.com.my/Booking/UpcomingList"
+            qr_path = res.get("payment_qr")
 
             # Guard against invalid /Book 405 link
             if not pay_url or pay_url.rstrip("/").lower().endswith("/book"):
@@ -482,6 +486,23 @@ class TelegramCommandHandler:
             if self.engine.task.passengers:
                 p_name = self.engine.task.passengers[0].name
 
+            # Push DuitNow QR photo directly to Telegram if captured
+            if qr_path and os.path.exists(qr_path) and hasattr(self.engine, "notifier") and self.engine.notifier:
+                try:
+                    self.engine.notifier.send_photo_alert(
+                        photo_path=qr_path,
+                        caption=(
+                            f"📱 *【KTMB 官方支付二维码 (DuitNow)】* 📱\n\n"
+                            f"• *车次*: *{t_no}* ({t_cls})\n"
+                            f"• *出发*: `{dep_time}`\n"
+                            f"• *席位*: `{seat_choice}` ({p_name})\n"
+                            f"• *时限*: 官方倒计时 *15 分钟*\n\n"
+                            f"💡 *手机扫码付款*: 保存此图片至手机相册，打开 Touch 'n Go 或 Maybank MAE / 任何银行 App 的扫一扫选择相册识别即可完成支付！"
+                        )
+                    )
+                except Exception as ex:
+                    logger.warning(f"发送 DuitNow 二维码图片失败: {ex}")
+
             return (
                 f"🎉 *【KTMB 官方席位锁定成功！】* 🎉\n\n"
                 f"• *官方订单号*: `{booking_id}`\n"
@@ -490,15 +511,26 @@ class TelegramCommandHandler:
                 f"• *发车时间*: `{dep_time}`\n"
                 f"• *乘车人*: {p_name}\n"
                 f"• *支付时限*: 官方倒计时 *15 分钟*（超时席位自动释放）\n\n"
-                f"📱 *推荐支付方式【手机 KTMB App (最顺畅)】*:\n"
-                f"打开手机【KTMB Mobile App】➡️ 登录同账号 ➡️ 进入底部【My Tickets】或【Upcoming】直接拉起 FPX 银行转账、Touch 'n Go 或信用卡完成支付！\n\n"
-                f"💻 *网页支付方式【KTMB 官网】*:\n"
-                f"🔗 [点击前往待支付订单列表 (Upcoming Trips)]({upcoming_url})\n"
-                f"👉 [官网直接付款链接]({pay_url})\n\n"
-                f"⚠️ *特别提醒*: 请勿直接在浏览器刷新或访问 /Book（KTMB 官方会拦截并报 405）。请在 KTMB App 或官网待出行列表中点击 Pay。"
+                f"📱 *推荐手机付款方式 (最顺畅)*:\n"
+                f"官方 DuitNow 支付二维码已发送至上方图片！\n"
+                f"保存图片后，使用 **Touch 'n Go eWallet** 或 **Maybank MAE / 银行 App** 识别该二维码即可秒级付款出票！\n"
+                f"（也可打开手机 **KTMB Mobile App** 在【My Tickets】直接完成支付）\n\n"
+                f"💻 *网页备用链接*:\n"
+                f"👉 [官网付款链接]({pay_url})"
             )
         except Exception as e:
             return f"❌ 预订下单失败: {e}\n建议回复 `/seat auto` 重试或回复 `/cancel` 继续监控。"
+
+    def _handle_logout(self) -> str:
+        driver = getattr(self.engine, "browser_driver", None)
+        auth = getattr(self.engine, "authenticator", None)
+        if auth and driver and getattr(driver, "page", None):
+            try:
+                auth.logout(driver.page)
+                return "🔓 *已成功释放 KTMB 官方登录锁*！\n您现在可以在手机 KTMB App 或电脑端自由登录了。"
+            except Exception as e:
+                return f"❌ 释放登录锁异常: {e}"
+        return "💡 当前无活跃的官方登录会话。"
 
     def _handle_cancel_selection(self) -> str:
         self.engine.selected_trip = None

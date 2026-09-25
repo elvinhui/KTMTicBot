@@ -236,3 +236,17 @@ def test_command_handler_seat_avoids_book_405(sample_engine):
     assert "UpcomingList" in res
     assert "KTMB Mobile App" in res
 
+
+def test_command_handler_logout(sample_engine):
+    handler = TelegramCommandHandler(engine=sample_engine, authorized_chat_id="1682009086")
+    mock_auth = MagicMock()
+    mock_driver = MagicMock()
+    mock_driver.page = MagicMock()
+    sample_engine.authenticator = mock_auth
+    sample_engine.browser_driver = mock_driver
+
+    res = handler.handle_message(chat_id="1682009086", text="/logout")
+    assert "已成功释放 KTMB 官方登录锁" in res
+    mock_auth.logout.assert_called_once_with(mock_driver.page)
+
+
