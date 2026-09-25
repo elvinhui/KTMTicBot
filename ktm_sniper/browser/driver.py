@@ -496,37 +496,51 @@ class KTMBrowserDriver:
                     raise
                 time.sleep(1.0)
 
-            # 4. Smart Seat Selection via DOM click
+            # 4. Smart Seat Selection via DOM click (supports multiple passengers/seats)
             pref = (seat_no or "AUTO").strip().upper()
+            target_count = len(task.passengers) if (task and task.passengers) else (getattr(task, "required_seats", 1) if task else 1)
+            target_count = max(1, target_count)
+
             target_seat_no = self.page.evaluate("""
-                (pref) => {
-                    const seats = Array.from(document.querySelectorAll('#seatSelect .selectable-icon[data-selected="false"]'));
-                    if (!seats.length) return null;
+                ({ pref, targetCount }) => {
+                    const userSpecificSeats = pref.split(/[, ]+/).filter(s => s.length > 0 && !['AUTO', 'WINDOW', 'AISLE', 'ANY', 'DEFAULT'].includes(s));
+                    const selected = [];
 
-                    let chosen = null;
-                    if (pref === 'WINDOW') {
-                        chosen = seats.find(s => {
-                            const no = (s.getAttribute('data-seat-no') || s.getAttribute('title') || '').toUpperCase();
-                            return no.endsWith('A') || no.endsWith('D');
-                        });
-                    } else if (pref === 'AISLE') {
-                        chosen = seats.find(s => {
-                            const no = (s.getAttribute('data-seat-no') || s.getAttribute('title') || '').toUpperCase();
-                            return no.endsWith('B') || no.endsWith('C');
-                        });
-                    } else if (pref !== 'AUTO' && pref !== 'ANY' && pref !== 'DEFAULT' && pref !== '') {
-                        chosen = seats.find(s => {
-                            const no = (s.getAttribute('data-seat-no') || s.getAttribute('title') || '').toUpperCase();
-                            return no === pref || no.endsWith(pref);
-                        });
+                    for (let i = 0; i < targetCount; i++) {
+                        const available = Array.from(document.querySelectorAll('#seatSelect .selectable-icon[data-selected="false"]'));
+                        if (!available.length) break;
+
+                        let chosen = null;
+                        if (i < userSpecificSeats.length) {
+                            const targetNo = userSpecificSeats[i].toUpperCase();
+                            chosen = available.find(s => {
+                                const no = (s.getAttribute('data-seat-no') || s.getAttribute('title') || '').toUpperCase();
+                                return no === targetNo || no.endsWith(targetNo) || targetNo.endsWith(no);
+                            });
+                        }
+
+                        if (!chosen && (pref.includes('WINDOW') || pref === 'AUTO')) {
+                            chosen = available.find(s => {
+                                const no = (s.getAttribute('data-seat-no') || s.getAttribute('title') || '').toUpperCase();
+                                return no.endsWith('A') || no.endsWith('D');
+                            });
+                        } else if (!chosen && pref.includes('AISLE')) {
+                            chosen = available.find(s => {
+                                const no = (s.getAttribute('data-seat-no') || s.getAttribute('title') || '').toUpperCase();
+                                return no.endsWith('B') || no.endsWith('C');
+                            });
+                        }
+
+                        if (!chosen) chosen = available[0];
+                        chosen.click();
+                        chosen.setAttribute('data-selected', 'true');
+                        selected.push(chosen.getAttribute('data-seat-no') || chosen.getAttribute('title') || 'Seat');
                     }
-                    if (!chosen) chosen = seats[0];
-                    chosen.click();
-                    return chosen.getAttribute('data-seat-no') || chosen.getAttribute('title');
+                    return selected.join(', ');
                 }
-            """, pref)
+            """, {"pref": pref, "targetCount": target_count})
 
-            logger.info(f"💺 已选定座位: {target_seat_no} (偏好: {pref})")
+            logger.info(f"💺 已选定座位: {target_seat_no} (席位数: {target_count}, 偏好/指定: {pref})")
             time.sleep(1.0)
 
             # 5. Confirm seat selection

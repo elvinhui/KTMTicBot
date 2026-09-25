@@ -459,7 +459,7 @@ class TelegramCommandHandler:
                 "添加完成后，再次回复 `/seat 3A` 或 `/seat auto` 即可立即锁定生成订单！"
             )
 
-        seat_choice = args[0].strip().upper() if args else "AUTO"
+        seat_choice = " ".join([a.strip().upper() for a in args]) if args else "AUTO"
         trip = self.engine.selected_trip
 
         try:
