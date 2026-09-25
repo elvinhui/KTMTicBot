@@ -770,15 +770,62 @@ class KTMBrowserDriver:
                     logger.info(f"💳 确认提交支付按钮触发状态: {submitted}")
 
                     # 4.3 Wait for payment gateway / countdown page to load
-                    # Gateway may open in current page or popup tab
                     time.sleep(2.0)
-                    all_pages = self.page.context.pages
-                    target_page = all_pages[-1] if len(all_pages) > 1 else self.page
-
                     try:
-                        target_page.wait_for_load_state("domcontentloaded", timeout=10000)
+                        self.page.wait_for_load_state("domcontentloaded", timeout=10000)
                     except Exception:
                         pass
+
+                    # Extract payment URL from parent page variable window._paymentUrl if present
+                    payment_url_js = None
+                    try:
+                        payment_url_js = self.page.evaluate("() => window._paymentUrl || null")
+                    except Exception:
+                        pass
+
+                    # Find or open the gateway page (KTMB opens Fiuu / Razer in a popup tab)
+                    gateway_page = None
+                    for p in self.page.context.pages:
+                        if p != self.page and ("fiuu.com" in p.url or "pay" in p.url or "GoPayment" in p.url):
+                            gateway_page = p
+                            break
+
+                    if not gateway_page and len(self.page.context.pages) > 1:
+                        gateway_page = self.page.context.pages[-1]
+
+                    # If popup wasn't automatically opened, open it explicitly using _paymentUrl
+                    if not gateway_page and payment_url_js:
+                        try:
+                            full_url = f"{self.base_url}{payment_url_js}" if payment_url_js.startswith("/") else payment_url_js
+                            logger.info(f"🌐 正在主动打开支付网关页面: {full_url}")
+                            gateway_page = self.page.context.new_page()
+                            gateway_page.goto(full_url, wait_until="domcontentloaded", timeout=15000)
+                        except Exception as e:
+                            logger.warning(f"主动打开支付网关异常: {e}")
+
+                    target_page = gateway_page if gateway_page else self.page
+                    if target_page != self.page:
+                        target_page.bring_to_front()
+                        try:
+                            target_page.wait_for_load_state("domcontentloaded", timeout=10000)
+                        except Exception:
+                            pass
+
+                    # 4.4 If on Fiuu payment checkout summary, click Pay button to render QR Code!
+                    # On pay.fiuu.com, the button is #pay-now-nomultipayment ("Pay MYR ...")
+                    try:
+                        pay_now_btn = target_page.locator("#pay-now-nomultipayment, button.pay-button, button:has-text('Pay MYR'), button:has-text('Pay '), input[value*='Pay']").first
+                        if pay_now_btn.is_visible(timeout=4000):
+                            logger.info("💳 检测到 Fiuu 支付网关【Pay MYR】确认按钮，正在触发以生成真实 DuitNow QR 码...")
+                            pay_now_btn.scroll_into_view_if_needed(timeout=2000)
+                            pay_now_btn.click()
+                            time.sleep(2.5)
+                            try:
+                                target_page.wait_for_load_state("networkidle", timeout=8000)
+                            except Exception:
+                                pass
+                    except Exception as e:
+                        logger.debug(f"检查 Fiuu pay-now 按钮跳过: {e}")
 
                     # Save gateway page HTML for audit
                     try:
@@ -787,105 +834,75 @@ class KTMBrowserDriver:
                     except Exception:
                         pass
 
-                    # 4.4 Polling loop for QR Code & Payment Gateway (up to 15 seconds)
-                    # Scans main frame and all child iframes for canvas, SVG, or QR images
-                    logger.info("🔍 正在跨 Frame 定位 DuitNow 二维码 / 支付网关元素...")
+                    # 4.5 Polling loop for genuine QR Code (up to 15 seconds)
+                    # Genuine QR code is at least 120x120 (filters out 80x80 logo icon)
+                    logger.info(f"🔍 正在目标网关页面 [{target_page.url}] 定位 DuitNow 二维码...")
                     qr_found = False
 
                     for poll_sec in range(1, 16):
-                        # Check context pages
-                        pages_to_check = self.page.context.pages
-                        for p in pages_to_check:
+                        # Search target_page and all its frames
+                        frames_to_check = target_page.frames
+                        for frame in frames_to_check:
                             if qr_found:
                                 break
 
-                            # Check all frames in page
-                            frames_to_check = p.frames
-                            for frame_idx, frame in enumerate(frames_to_check):
-                                if qr_found:
-                                    break
+                            qr_candidates = [
+                                "canvas",
+                                "svg:has(rect), svg:has(path)",
+                                "img[src*='qr'], img[src*='QR'], img[src*='data:image']",
+                                "#qrCode img, .qrcode img, .qr-code img, #qrImage, .qr-image img, #duitnow-qr",
+                                ".qrcode, #qrcode, .qr-code, #qrCode",
+                            ]
 
-                                # Check for iframe external URL
-                                if frame != p.main_frame and frame.url and frame.url.startswith("http"):
-                                    if not gateway_url:
-                                        gateway_url = frame.url
-                                        logger.info(f"🌐 捕获到支付网关外链 URL: {gateway_url}")
+                            for selector in qr_candidates:
+                                try:
+                                    matches = frame.locator(selector)
+                                    count = matches.count()
+                                    for idx in range(count):
+                                        loc = matches.nth(idx)
+                                        if not loc.is_visible():
+                                            continue
+                                        box = loc.bounding_box()
+                                        # Exclude tiny icons: real QR codes are >= 120x120
+                                        if not box or box["width"] < 120 or box["height"] < 120:
+                                            continue
 
-                                # 1. Search for QR canvas / svg / img inside this frame
-                                qr_candidates = [
-                                    "canvas",
-                                    "svg:has(rect), svg:has(path)",
-                                    "img[src*='qr'], img[src*='QR'], img[src*='duitnow'], img[src*='paynet'], img[src*='data:image']",
-                                    "#qrCode img, .qrcode img, .qr-code img, #qrImage, .qr-image img, #duitnow-qr",
-                                    ".qrcode, #qrcode, .qr-code, #qrCode",
-                                ]
-
-                                for selector in qr_candidates:
-                                    try:
-                                        matches = frame.locator(selector)
-                                        count = matches.count()
-                                        for idx in range(count):
-                                            loc = matches.nth(idx)
-                                            if not loc.is_visible():
-                                                continue
-                                            box = loc.bounding_box()
-                                            if not box or box["width"] < 60 or box["height"] < 60:
-                                                continue
-
-                                            # We found a visible QR element with adequate dimensions!
-                                            logger.info(
-                                                f"📸 成功定位 DuitNow 二维码！Frame: [{frame.name or frame.url}], "
-                                                f"选择器: '{selector}', 尺寸: {int(box['width'])}x{int(box['height'])} (耗时 {poll_sec}s)"
-                                            )
-                                            loc.scroll_into_view_if_needed(timeout=2000)
-                                            time.sleep(0.5)
-                                            loc.screenshot(path=qr_screenshot_path)
-                                            if os.path.exists(qr_screenshot_path) and os.path.getsize(qr_screenshot_path) > 2000:
-                                                qr_found = True
-                                                has_qr = True
-                                                break
-                                    except Exception:
-                                        continue
+                                        # We found a visible QR element with adequate dimensions!
+                                        logger.info(
+                                            f"📸 成功定位真实 DuitNow 二维码！Frame: [{frame.name or frame.url}], "
+                                            f"选择器: '{selector}', 尺寸: {int(box['width'])}x{int(box['height'])} (耗时 {poll_sec}s)"
+                                        )
+                                        loc.scroll_into_view_if_needed(timeout=2000)
+                                        time.sleep(0.5)
+                                        loc.screenshot(path=qr_screenshot_path)
+                                        if os.path.exists(qr_screenshot_path) and os.path.getsize(qr_screenshot_path) > 1000:
+                                            qr_found = True
+                                            has_qr = True
+                                            break
+                                except Exception:
+                                    continue
 
                         if qr_found:
                             break
 
-                        # If after 6 seconds no QR element is found, check if an iframe can be captured
-                        if poll_sec >= 6 and not qr_found:
-                            try:
-                                iframes = target_page.locator("iframe")
-                                for ifr_idx in range(iframes.count()):
-                                    ifr = iframes.nth(ifr_idx)
-                                    if ifr.is_visible():
-                                        box = ifr.bounding_box()
-                                        if box and box["width"] > 200 and box["height"] > 200:
-                                            src_val = ifr.get_attribute("src") or ""
-                                            if src_val.startswith("http") and not gateway_url:
-                                                gateway_url = src_val
-                                            logger.info(f"📸 捕获到支付网关 iframe (尺寸 {int(box['width'])}x{int(box['height'])}), 正在截图...")
-                                            ifr.screenshot(path=qr_screenshot_path)
-                                            if os.path.exists(qr_screenshot_path) and os.path.getsize(qr_screenshot_path) > 3000:
-                                                has_qr = True
-                                                break
-                            except Exception:
-                                pass
-
                         time.sleep(1.0)
 
-                    # 4.5 Fallback: if no element screenshot succeeded, take a full page screenshot
-                    if not has_qr or not os.path.exists(qr_screenshot_path) or os.path.getsize(qr_screenshot_path) < 2000:
-                        logger.info("ℹ️ 未能隔离单个二维码元素，截取网关完整页面作为凭据...")
+                    # 4.6 Fallback: if no isolated QR element screenshot succeeded, screenshot target_page (Fiuu)
+                    if not qr_found:
+                        logger.info("ℹ️ 未能隔离单个二维码元素，截取网关页面完整内容作为凭据...")
                         target_page.screenshot(path=qr_screenshot_path, full_page=True)
                         has_qr = True
 
-                    # Update booking ID & checkout URL from final page/url
+                    # Update booking ID & checkout URL
                     final_url = target_page.url
-                    m_final = re.search(r"bookingId=([A-Za-z0-9\-_]+)", final_url, re.IGNORECASE)
+                    m_final = re.search(r"orderid=([A-Za-z0-9\-_]+)", final_url, re.IGNORECASE)
+                    if not m_final:
+                        m_final = re.search(r"bookingId=([A-Za-z0-9\-_]+)", final_url, re.IGNORECASE)
                     if m_final:
                         official_id = m_final.group(1)
 
-                    if gateway_url:
-                        checkout_url = gateway_url
+                    if target_page != self.page and target_page.url.startswith("http"):
+                        checkout_url = target_page.url
                     elif "payment" in final_url.lower() or "checkout" in final_url.lower() or "book" in final_url.lower():
                         checkout_url = final_url
                 else:
