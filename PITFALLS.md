@@ -158,4 +158,28 @@
   2. **精准错误捕获与提示**：在 `KTMAuthenticator` 捕获到 `"Not allow multiple login"` 弹窗文字时，在日志中向用户明确提示：「检测到账号在其他设备已登录，请先在浏览器/手机登出后再运行」。
   3. **忘记密码强制重置踢出会话**：若服务端 Session 挂起或被锁死，通过官方忘记密码流程（`/Account/ForgetPassword`）重置密码，KTMB 服务端会立即强制踢除所有挂起会话并解锁。
   4. **机器人关闭时优雅登出**：在 `main.py` 的 `finally:` 块中通过 `authenticator.logout()` 访问 `/Account/Logout`，确保每次守护退出时均显式释放服务端会话，保障下次启动无缝登录。
+  5. **推送支付二维码后立即自动登出**：在机器人锁定席位并在官方结账台生成 DuitNow 支付二维码推送到 Telegram 后，后台立即自动调用 `/Account/Logout`，彻底释放单点登录锁，保障用户能在手机 App 或电脑端随意登录付款。
+
+---
+
+### 12. KTMB /Book 内部 POST 路由与临时会话购物车机制 (HTTP 405)
+
+* **问题现象 (Root Cause)**：
+  1. KTMB KITS 票务系统的 `/Book` 端点仅支持表单内部 POST 请求，不提供任何 GET 接口。直接在外部浏览器打开或从 Telegram 链接访问 `/Book` 时，服务器返回 `HTTP ERROR 405 Method Not Allowed`。
+  2. KTMB 没有类似于电商平台的持久化未支付订单（Unpaid Cart）。用户在 `Upcoming trips` 中只能查看到已经扣款成功的车票。未支付的锁定位仅存在于当前浏览器的临时结账会话中。
+* **已验证解决方案 (Verified Solution)**：
+  1. **禁止回传 `/Book`**：在 `driver.py` 中严格过滤支付 URL，杜绝 `/Book` 链接，改用官方行程待办列表 `UpcomingList` 或带订单号的 `Payment/Checkout?bookingId=...`。
+  2. **官方结账台调起 DuitNow QR**：在到达官方结账台后，机器人直接点击并调起 DuitNow QR 通道，截取付款二维码高清图片直发 Telegram。
+  3. **手机原生扫码付款**：用户在手机 Telegram 保存二维码图片，通过 Touch 'n Go 或银行 App 的扫一扫选择相册识别付款，无需在任何浏览器重复登录。
+
+---
+
+### 13. 动态控制模块缺包与作用域陷阱 (`name 'os' is not defined`)
+
+* **问题现象 (Root Cause)**：
+  在 `ktm_sniper/telegram_bot.py` 中处理 `/seat` 指令发送支付二维码图片时，调用了 `os.path.exists(qr_path)`，但文件头部未导入 `os` 模块，导致在用户发出选座指令时触发 `NameError: name 'os' is not defined` 导致下单流程中断。
+* **已验证解决方案 (Verified Solution)**：
+  1. 在 `ktm_sniper/telegram_bot.py` 顶部显式补齐 `import os`，并对 `ktm_sniper/browser/driver.py` 进行全局 `import os, shutil` 模块级规范化。
+  2. 为 Telegram `/seat` 包含 QR 图片与自动登出的完整控制流补充自动化单元测试（`test_command_handler_seat_with_qr_and_autologout`），纳入 CI 回归基线。
+
 

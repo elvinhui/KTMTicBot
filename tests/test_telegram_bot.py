@@ -250,3 +250,31 @@ def test_command_handler_logout(sample_engine):
     mock_auth.logout.assert_called_once_with(mock_driver.page)
 
 
+def test_command_handler_seat_with_qr_and_autologout(sample_engine, tmp_path):
+    handler = TelegramCommandHandler(engine=sample_engine, authorized_chat_id="1682009086")
+    qr_file = tmp_path / "test_qr.png"
+    qr_file.write_text("fake image content")
+
+    mock_auth = MagicMock()
+    mock_driver = MagicMock()
+    mock_driver.page = MagicMock()
+    sample_engine.authenticator = mock_auth
+    sample_engine.browser_driver = mock_driver
+    sample_engine.notifier = MagicMock()
+
+    sample_engine.selected_trip = {"train_no": "9124", "train_class": "Platinum", "departure_time": "08:05"}
+    sample_engine.execute_real_booking = MagicMock(return_value={
+        "status": "SUCCESS",
+        "booking_id": "KITS-1790309999",
+        "payment_url": "https://online.ktmb.com.my/Booking/UpcomingList",
+        "payment_qr": str(qr_file)
+    })
+
+    res = handler.handle_message(chat_id="1682009086", text="/seat 10B")
+    assert "10B" in res
+    assert "DuitNow" in res
+    sample_engine.notifier.send_photo_alert.assert_called_once()
+    mock_auth.logout.assert_called_once_with(mock_driver.page)
+
+
+
