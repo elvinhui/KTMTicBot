@@ -506,11 +506,8 @@ class TelegramCommandHandler:
 
             # Automatically logout on EC2 to release KTMB single-login lock immediately
             try:
-                driver = getattr(self.engine, "browser_driver", None)
-                auth = getattr(self.engine, "authenticator", None)
-                if auth and driver and getattr(driver, "page", None):
-                    logger.info("🔓 已发送支付二维码至 Telegram，正在自动登出 EC2 会话以释放 KTMB 单点登录锁...")
-                    auth.logout(driver.page)
+                logger.info("🔓 已发送支付二维码至 Telegram，正在自动登出 EC2 会话以释放 KTMB 单点登录锁...")
+                self.engine.logout()
             except Exception as ex:
                 logger.warning(f"发送二维码后自动登出 EC2 异常: {ex}")
 
@@ -533,15 +530,13 @@ class TelegramCommandHandler:
             return f"❌ 预订下单失败: {e}\n建议回复 `/seat auto` 重试或回复 `/cancel` 继续监控。"
 
     def _handle_logout(self) -> str:
-        driver = getattr(self.engine, "browser_driver", None)
-        auth = getattr(self.engine, "authenticator", None)
-        if auth and driver and getattr(driver, "page", None):
-            try:
-                auth.logout(driver.page)
+        try:
+            ok = self.engine.logout()
+            if ok:
                 return "🔓 *已成功释放 KTMB 官方登录锁*！\n您现在可以在手机 KTMB App 或电脑端自由登录了。"
-            except Exception as e:
-                return f"❌ 释放登录锁异常: {e}"
-        return "💡 当前无活跃的官方登录会话。"
+            return "💡 当前无活跃的官方登录会话或已处于登出状态。"
+        except Exception as e:
+            return f"❌ 释放登录锁异常: {e}"
 
     def _handle_cancel_selection(self) -> str:
         self.engine.selected_trip = None

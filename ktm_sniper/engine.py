@@ -147,6 +147,22 @@ class KTMSniperEngine:
             task=self.task
         )
 
+    def logout(self) -> bool:
+        """
+        Thread-safely logs out of the KITS session from any background thread.
+        Dispatches to the main browser thread.
+        """
+        return self.run_in_browser_thread(self._logout_sync)
+
+    def _logout_sync(self) -> bool:
+        if self.authenticator and self.browser_driver and getattr(self.browser_driver, "page", None):
+            try:
+                return self.authenticator.logout(self.browser_driver.page)
+            except Exception as e:
+                logger.warning(f"Engine logout sync error: {e}")
+                return False
+        return False
+
     def update_task(self, new_task: SniperTaskConfig):
         """
         Thread-safely hot-updates the target sniper task criteria.

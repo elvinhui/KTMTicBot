@@ -667,40 +667,89 @@ class KTMBrowserDriver:
 
             # Step 4: Automatically select DuitNow QR to display the payment QR code
             qr_screenshot_path = "data/payment_qr.png"
-            import os
             os.makedirs("data", exist_ok=True)
             has_qr = False
 
             try:
-                duitnow_opt = self.page.locator("text='DuitNow QR', img[src*='duitnow' i], [data-payment-method*='duitnow' i]").first
-                if duitnow_opt.is_visible(timeout=3000):
-                    logger.info("💳 正在选择 DuitNow QR 官方支付方式...")
-                    duitnow_opt.click()
-                    time.sleep(1.0)
+                # 4.1 Locate and click DuitNow QR option via JavaScript evaluation across all tags/text/images
+                click_result = self.page.evaluate("""
+                    () => {
+                        const all = Array.from(document.querySelectorAll('*'));
+                        let target = null;
+                        for (const el of all) {
+                            const text = (el.innerText || el.textContent || '').trim();
+                            const alt = (el.getAttribute('alt') || '').toLowerCase();
+                            const src = (el.getAttribute('src') || '').toLowerCase();
+                            if (text === 'DuitNow QR' || text.includes('DuitNow') || alt.includes('duitnow') || src.includes('duitnow')) {
+                                target = el;
+                                break;
+                            }
+                        }
+                        if (!target) {
+                            for (const el of all) {
+                                const text = (el.innerText || el.textContent || '').trim();
+                                if (text.includes("Touch 'n Go")) {
+                                    target = el;
+                                    break;
+                                }
+                            }
+                        }
+                        if (target) {
+                            const card = target.closest('button, a, .payment-option, .box, .card, [class*="payment"], div[onclick]') || target.parentElement || target;
+                            card.scrollIntoView({ behavior: 'instant', block: 'center' });
+                            card.click();
+                            card.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                            return { found: true, tag: card.tagName, text: target.innerText || '' };
+                        }
+                        return { found: false };
+                    }
+                """)
+                logger.info(f"💳 官方支付方式点击状态: {click_result}")
 
-                    pay_btn = self.page.locator("button:has-text('PAY'), button:has-text('PROCEED'), input[value*='Pay' i], #btnPayNow").first
-                    if pay_btn.is_visible(timeout=2000):
-                        logger.info("💳 点击确认调起 DuitNow QR 码...")
-                        pay_btn.click()
-                        time.sleep(2.0)
+                if isinstance(click_result, dict) and click_result.get("found"):
+                    time.sleep(1.5)
+                    # 4.2 If a Proceed / Pay button exists or becomes enabled, click it
+                    submitted = self.page.evaluate("""
+                        () => {
+                            const buttons = Array.from(document.querySelectorAll('button, a, input[type="submit"], input[type="button"]'));
+                            for (const btn of buttons) {
+                                const t = (btn.innerText || btn.value || '').trim().toUpperCase();
+                                if (t.includes('PAY') || t.includes('PROCEED') || t.includes('CONFIRM') || t.includes('CONTINUE')) {
+                                    if (btn.offsetParent !== null && !btn.disabled) {
+                                        btn.scrollIntoView({ behavior: 'instant', block: 'center' });
+                                        btn.click();
+                                        return true;
+                                    }
+                                }
+                            }
+                            return false;
+                        }
+                    """)
+                    logger.info(f"💳 确认提交支付按钮触发状态: {submitted}")
+                    time.sleep(2.5)
 
-                    qr_elem = self.page.locator("img[src*='qr' i], img[src*='duitnow' i], canvas, #qrCode, .qr-code").first
+                    try:
+                        self.page.wait_for_load_state("networkidle", timeout=6000)
+                    except Exception:
+                        pass
+
+                    # 4.3 Look for the rendered QR code element
+                    qr_elem = self.page.locator("img[src*='data:image'], img[src*='qr' i], img[src*='duitnow' i], canvas, #qrCode, .qr-code, #qrImage, .duitnow-qr").first
                     if qr_elem.is_visible(timeout=3000):
                         logger.info("📸 检测到官方支付二维码，正在精准截图...")
                         qr_elem.screenshot(path=qr_screenshot_path)
                         has_qr = True
                     else:
+                        # Full page screenshot which now shows the selected payment state or QR modal
                         self.page.screenshot(path=qr_screenshot_path, full_page=True)
                         has_qr = True
                 else:
                     if os.path.exists(screenshot_path):
-                        import shutil
                         shutil.copyfile(screenshot_path, qr_screenshot_path)
                         has_qr = True
             except Exception as e:
                 logger.warning(f"调起 DuitNow QR 异常: {e}")
                 if os.path.exists(screenshot_path):
-                    import shutil
                     shutil.copyfile(screenshot_path, qr_screenshot_path)
                     has_qr = True
 
