@@ -19,16 +19,25 @@ class KTMBrowserDriver:
 
     def check_maintenance_modal(self) -> Optional[str]:
         """
-        Checks if KTMB daily maintenance modal (scheduled 23:00 - 00:15 UTC+8) is active.
+        Checks if KTMB daily maintenance modal is blocking and active without dismiss button.
+        If it is an advance informational notice (e.g. maintenance scheduled tonight) with a Close button,
+        it should be dismissed so booking can continue.
         """
         try:
             return self.page.evaluate("""() => {
                 const modal = document.getElementById('popupModal');
                 if (modal && (modal.classList.contains('show') || window.getComputedStyle(modal).display !== 'none')) {
-                    const text = modal.innerText || '';
-                    if (text.toLowerCase().includes('maintenance')) {
+                    const text = (modal.innerText || '').toLowerCase();
+                    const closeBtn = document.getElementById('popupModalCloseButton') || 
+                                     document.getElementById('popupModalOkButton') || 
+                                     modal.querySelector('button, .btn, .close');
+                    // If there is an active dismiss/close button, it is an advance warning, not a hard blocking error
+                    if (closeBtn && window.getComputedStyle(closeBtn).display !== 'none') {
+                        return null;
+                    }
+                    if (text.includes('maintenance') || text.includes('under maintenance')) {
                         const body = document.getElementById('popupModalBody');
-                        return body ? body.innerText.trim() : text.trim();
+                        return body ? body.innerText.trim() : modal.innerText.trim();
                     }
                 }
                 return null;
@@ -38,13 +47,36 @@ class KTMBrowserDriver:
 
     def dismiss_modals(self):
         """
-        Dismisses advertisement modals, notification popups, or cookie consent banners if present.
-        Leaves system maintenance alerts intact so callers can detect scheduled downtime.
+        Dismisses advertisement modals, notification popups, advance notice modals, or cookie consent banners.
+        Removes blocking backdrops so subsequent clicks are not intercepted.
         """
-        # If active maintenance modal, do not blindly click
-        m_text = self.check_maintenance_modal()
-        if m_text:
-            return
+        try:
+            self.page.evaluate("""() => {
+                // 1. Remove cookie banners and overlays
+                document.querySelectorAll('.cc-window, .cc-banner, .cc-overlay, #cookie-law-info-bar').forEach(el => el.remove());
+
+                // 2. Handle #popupModal (advance notice, promo, alerts)
+                const modal = document.getElementById('popupModal');
+                if (modal) {
+                    const btn = document.getElementById('popupModalCloseButton') || 
+                                document.getElementById('popupModalOkButton') || 
+                                modal.querySelector('button, .btn, .close');
+                    if (btn && window.getComputedStyle(btn).display !== 'none') {
+                        btn.click();
+                    }
+                    // Force close and remove backdrop if still present
+                    modal.classList.remove('show');
+                    modal.style.display = 'none';
+                    modal.setAttribute('aria-hidden', 'true');
+                }
+
+                // 3. Remove any remaining modal backdrops that block pointer events
+                document.querySelectorAll('.modal-backdrop').forEach(b => b.remove());
+                document.body.classList.remove('modal-open');
+                document.body.style.overflow = '';
+            }""")
+        except Exception:
+            pass
 
         for selector in [
             "#popupModalCloseButton",
@@ -60,31 +92,10 @@ class KTMBrowserDriver:
         ]:
             try:
                 locator = self.page.locator(selector).first
-                if locator.is_visible(timeout=500):
-                    locator.click(timeout=1000, force=True)
+                if locator.is_visible(timeout=300):
+                    locator.click(timeout=800, force=True)
             except Exception:
                 pass
-
-        try:
-            self.page.evaluate("""() => {
-                document.querySelectorAll('.cc-window, .cc-banner, .cc-overlay, #cookie-law-info-bar').forEach(el => el.remove());
-                const modal = document.getElementById('popupModal');
-                if (modal && (modal.classList.contains('show') || modal.getAttribute('data-show') === 'true')) {
-                    const text = modal.innerText || '';
-                    if (!text.toLowerCase().includes('maintenance')) {
-                        const btn = document.getElementById('popupModalCloseButton') || document.getElementById('popupModalOkButton') || modal.querySelector('button, .btn');
-                        if (btn && window.getComputedStyle(btn).display !== 'none') {
-                            btn.click();
-                        } else {
-                            modal.classList.remove('show');
-                            modal.style.display = 'none';
-                            document.querySelectorAll('.modal-backdrop').forEach(b => b.remove());
-                        }
-                    }
-                }
-            }""")
-        except Exception:
-            pass
 
     def navigate_to_booking(self, timeout_ms: int = 30000):
         self.page.goto(self.base_url, timeout=timeout_ms)
@@ -380,8 +391,14 @@ class KTMBrowserDriver:
         """
         self.dismiss_modals()
         try:
-            # 1. Ensure browser is on the /Trip page
-            if "/Trip" not in (self.page.url or "") and task is not None:
+            # 1. Ensure browser is on the /Trip page with rendered trips
+            needs_search = False
+            if "/Trip" not in (self.page.url or ""):
+                needs_search = True
+            elif self.page.locator("tbody.depart-trips tr").count() == 0:
+                needs_search = True
+
+            if needs_search and task is not None:
                 logger.info(f"🧭 正在为订座将无头浏览器导航至 /Trip ({task.origin} -> {task.destination} on {task.date})...")
                 self.navigate_to_booking()
                 self.fill_search_criteria(task)
@@ -400,7 +417,7 @@ class KTMBrowserDriver:
             btn = row.locator(".btn-seat-layout, button:has-text('Pick Seats'), a:has-text('Pick Seats'), a:has-text('Select')").first
             if btn.count() > 0:
                 try:
-                    btn.scroll_into_view_if_needed()
+                    btn.scroll_into_view_if_needed(timeout=2000)
                     btn.click(timeout=5000, force=True)
                 except Exception:
                     btn.click(timeout=5000)
@@ -410,7 +427,7 @@ class KTMBrowserDriver:
                 except Exception:
                     self.page.locator(f".btn-seat-layout[data-tripdata*='{train_no}']").first.click(timeout=5000)
 
-            self.page.wait_for_selector("#seatSelect", state="visible", timeout=10000)
+            self.page.wait_for_selector("#seatSelect", state="visible", timeout=12000)
             time.sleep(1.0)
 
             layout_data = self.page.evaluate("""
@@ -466,8 +483,14 @@ class KTMBrowserDriver:
         or specific seat numbers), confirms seat, and proceeds to passenger details (/Book).
         """
         try:
-            # 1. Ensure browser is on /Trip page
-            if "/Trip" not in (self.page.url or "") and task is not None:
+            # 1. Ensure browser is on /Trip page and train table is rendered
+            needs_search = False
+            if "/Trip" not in (self.page.url or ""):
+                needs_search = True
+            elif self.page.locator("tbody.depart-trips tr").count() == 0:
+                needs_search = True
+
+            if needs_search and task is not None:
                 self.navigate_to_booking()
                 self.fill_search_criteria(task)
                 self.trigger_search()
@@ -481,14 +504,19 @@ class KTMBrowserDriver:
                 if m_init:
                     raise RuntimeError(f"KTMB 官方系统维护中（每晚 23:00 - 00:15 例行维护，暂停订票与支付）：{m_init}")
 
+                self.dismiss_modals()
                 btn = self.page.locator(f"tbody.depart-trips tr:has-text('{train_no}') .btn-seat-layout, tbody.depart-trips tr .btn-seat-layout").first
                 if btn.count() > 0:
+                    try:
+                        btn.scroll_into_view_if_needed(timeout=2000)
+                    except Exception:
+                        pass
                     btn.click(timeout=5000, force=True)
                 else:
                     self.fetch_seats_layout(train_no or "", task=task)
 
                 try:
-                    self.page.wait_for_selector("#seatSelect", state="visible", timeout=6000)
+                    self.page.wait_for_selector("#seatSelect", state="visible", timeout=12000)
                 except Exception:
                     m_text = self.check_maintenance_modal()
                     if m_text:
