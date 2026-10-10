@@ -580,7 +580,71 @@ class KTMBrowserDriver:
             confirm_btn = self.page.locator("#confirmSeatBtn").first
             if confirm_btn.count() > 0:
                 confirm_btn.evaluate("e => e.click()")
-            time.sleep(1.5)
+            time.sleep(2.0)
+
+            # 5b. Check if this is a Round Trip where Return trip seats also need to be selected
+            return_btn = self.page.locator("tbody.return-trips tr .btn-seat-layout").first
+            if return_btn.count() > 0:
+                logger.info("🔄 检测到往返双程（Round Trip），正在自动选取返程车次座位...")
+                try:
+                    return_btn.scroll_into_view_if_needed(timeout=2000)
+                except Exception:
+                    pass
+                return_btn.click(timeout=5000, force=True)
+
+                self.page.wait_for_selector("#seatSelect", state="visible", timeout=12000)
+                time.sleep(1.0)
+
+                return_target_seat_no = self.page.evaluate("""
+                    ({ pref, targetCount }) => {
+                        const userSpecificSeats = pref.split(/[, ]+/).filter(s => s.length > 0 && !['AUTO', 'WINDOW', 'AISLE', 'ANY', 'DEFAULT'].includes(s));
+                        const selected = [];
+
+                        for (let i = 0; i < targetCount; i++) {
+                            const available = Array.from(document.querySelectorAll('#seatSelect .selectable-icon[data-selected="false"]'));
+                            if (!available.length) break;
+
+                            let chosen = null;
+                            if (i < userSpecificSeats.length) {
+                                const targetNo = userSpecificSeats[i].toUpperCase();
+                                chosen = available.find(s => {
+                                    const no = (s.getAttribute('data-seat-no') || s.getAttribute('title') || '').toUpperCase();
+                                    return no === targetNo || no.endsWith(targetNo) || targetNo.endsWith(no);
+                                });
+                            }
+
+                            if (!chosen && (pref.includes('WINDOW') || pref === 'AUTO')) {
+                                chosen = available.find(s => {
+                                    const no = (s.getAttribute('data-seat-no') || s.getAttribute('title') || '').toUpperCase();
+                                    return no.endsWith('A') || no.endsWith('D');
+                                });
+                            } else if (!chosen && pref.includes('AISLE')) {
+                                chosen = available.find(s => {
+                                    const no = (s.getAttribute('data-seat-no') || s.getAttribute('title') || '').toUpperCase();
+                                    return no.endsWith('B') || no.endsWith('C');
+                                });
+                            }
+
+                            if (!chosen) chosen = available[0];
+                            chosen.click();
+                            chosen.setAttribute('data-selected', 'true');
+                            selected.push(chosen.getAttribute('data-seat-no') || chosen.getAttribute('title') || 'Seat');
+                        }
+                        return selected.join(', ');
+                    }
+                """, {"pref": pref, "targetCount": target_count})
+
+                logger.info(f"💺 返程车次已选定座位: {return_target_seat_no}")
+                time.sleep(1.0)
+
+                try:
+                    self.page.wait_for_selector("#confirmSeatBtn:not(.disabled-btn)", timeout=5000)
+                except Exception:
+                    pass
+                confirm_btn2 = self.page.locator("#confirmSeatBtn").first
+                if confirm_btn2.count() > 0:
+                    confirm_btn2.evaluate("e => e.click()")
+                time.sleep(2.0)
 
             # 6. Click PROCEED TO PASSENGER DETAILS
             proceed_btn = self.page.locator("button:has-text('PROCEED TO PASSENGER DETAILS'), .btn-passenger").first
@@ -612,15 +676,21 @@ class KTMBrowserDriver:
                 p_phone = getattr(p, "phone", p.get("phone") if isinstance(p, dict) else "")
                 p_gender = getattr(p, "gender", p.get("gender") if isinstance(p, dict) else "Male")
 
-                name_input = self.page.locator(f"#Passengers_{idx}__FullName, input.FullName").first
+                name_input = self.page.locator(f"#Passengers_{idx}__FullName").first
+                if name_input.count() == 0:
+                    name_input = self.page.locator("input.FullName").nth(idx)
                 if name_input.count() > 0:
                     name_input.fill(p_name)
 
-                id_input = self.page.locator(f"#Passengers_{idx}__IdentityNo, input.IdentityNo").first
+                id_input = self.page.locator(f"#Passengers_{idx}__IdentityNo").first
+                if id_input.count() == 0:
+                    id_input = self.page.locator("input.IdentityNo").nth(idx)
                 if id_input.count() > 0:
                     id_input.fill(p_id)
 
-                phone_input = self.page.locator(f"#Passengers_{idx}__ContactNo, input.ContactNo").first
+                phone_input = self.page.locator(f"#Passengers_{idx}__ContactNo").first
+                if phone_input.count() == 0:
+                    phone_input = self.page.locator("input.ContactNo").nth(idx)
                 if phone_input.count() > 0:
                     phone_input.fill(p_phone)
 
