@@ -1,0 +1,72 @@
+name: 🚄 KTMTicBot CI & EC2 Auto-Deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-deploy:
+    name: Test Suite & EC2 Deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r module_auto_healer/requirements.txt
+
+      - name: Bytecode Syntax Check
+        run: |
+          python -m py_compile main.py
+          find ktm_sniper -name "*.py" -exec python -m py_compile {} +
+
+      - name: Run Unit & Integration Test Suite
+        run: |
+          python -m pytest tests/ -v
+
+      - name: Auto-Deploy to AWS EC2 (Push Mode)
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ -z "$EC2_HOST" ] || [ -z "$EC2_SSH_KEY" ]; then
+            echo "Notice: EC2_HOST or EC2_SSH_KEY not set in GitHub Secrets."
+            echo "Relying on EC2 Pull-Mode Watchdog (ec2_watchdog.sh) to auto-pull main and restart container."
+            exit 0
+          fi
+
+          mkdir -p ~/.ssh
+          echo "$EC2_SSH_KEY" > ~/.ssh/ec2_deploy_key.pem
+          chmod 600 ~/.ssh/ec2_deploy_key.pem
+
+          echo "Deploying latest verified main branch to EC2 ($EC2_HOST)..."
+          ssh -i ~/.ssh/ec2_deploy_key.pem -o StrictHostKeyChecking=no "$EC2_HOST" bash <<'REMOTE'
+            set -euo pipefail
+            cd ~/ktm-sniper
+            git fetch origin main
+            git reset --hard origin/main
+            docker compose up -d --build --remove-orphans
+            sleep 5
+            docker compose ps
+          REMOTE
+
+          rm -f ~/.ssh/ec2_deploy_key.pem
+          echo "✅ EC2 deployment completed successfully!"

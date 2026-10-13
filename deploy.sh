@@ -51,6 +51,9 @@ ssh -i "$EC2_KEY" -o StrictHostKeyChecking=no "$EC2_HOST" bash <<'REMOTE'
   cd ~/ktm-sniper
   echo "  -> git pull origin main"
   git pull origin main
+  chmod +x ~/ktm-sniper/ec2_watchdog.sh || true
+  (crontab -l 2>/dev/null | grep -v "ec2_watchdog.sh" || true; echo "*/2 * * * * \$HOME/ktm-sniper/ec2_watchdog.sh >> \$HOME/ktm-sniper/watchdog.log 2>&1") | crontab -
+  echo "  -> ec2_watchdog.sh cron registered (every 2m)"
   echo "  -> docker compose build"
   docker compose build
   echo "  -> docker compose up -d"
