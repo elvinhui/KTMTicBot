@@ -13,11 +13,8 @@ set -euo pipefail
 APP_DIR="${APP_DIR:-$HOME/ktm-sniper}"
 cd "$APP_DIR"
 
-if [ -f ".env" ]; then
-  set -a
-  # shellcheck disable=SC1091
-  source <(grep -v '^#' .env | sed 's/\r$//') || true
-  set +a
+if [ -f ".env" ] && [ -z "${GH_PAT:-}" ]; then
+  GH_PAT=$(grep '^GH_PAT=' .env 2>/dev/null | head -n 1 | cut -d'=' -f2- | tr -d '\r"'\''' || true)
 fi
 
 # ── 1. Check for new commits on origin/main (Auto-Deploy) ────────────────────
