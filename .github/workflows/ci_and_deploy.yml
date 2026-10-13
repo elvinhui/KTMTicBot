@@ -43,6 +43,7 @@ jobs:
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         env:
           EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
           EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -54,15 +55,20 @@ jobs:
           fi
 
           mkdir -p ~/.ssh
-          echo "$EC2_SSH_KEY" > ~/.ssh/ec2_deploy_key.pem
+          printf "%s\n" "$EC2_SSH_KEY" > ~/.ssh/ec2_deploy_key.pem
           chmod 600 ~/.ssh/ec2_deploy_key.pem
 
-          echo "Deploying latest verified main branch to EC2 ($EC2_HOST)..."
-          ssh -i ~/.ssh/ec2_deploy_key.pem -o StrictHostKeyChecking=no "$EC2_HOST" bash <<'REMOTE'
+          SSH_TARGET="$EC2_HOST"
+          if [[ "$SSH_TARGET" != *"@"* ]]; then
+            SSH_TARGET="${EC2_USER:-ubuntu}@$EC2_HOST"
+          fi
+
+          echo "Deploying latest verified main branch to EC2 ($SSH_TARGET)..."
+          ssh -i ~/.ssh/ec2_deploy_key.pem -o StrictHostKeyChecking=no "$SSH_TARGET" bash <<'REMOTE'
             set -euo pipefail
             cd ~/ktm-sniper
-            git fetch origin main
-            git reset --hard origin/main
+            git pull --rebase --autostash origin main
+            chmod +x deploy.sh ec2_watchdog.sh 2>/dev/null || true
             docker compose up -d --build --remove-orphans
             sleep 5
             docker compose ps
@@ -70,3 +76,4 @@ jobs:
 
           rm -f ~/.ssh/ec2_deploy_key.pem
           echo "✅ EC2 deployment completed successfully!"
+

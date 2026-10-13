@@ -27,7 +27,7 @@ REMOTE_SHA=$(git rev-parse origin/main)
 
 if [ "$LOCAL_SHA" != "$REMOTE_SHA" ]; then
   echo "[$(date -Is)] 🚀 New verified commit detected on origin/main ($LOCAL_SHA -> $REMOTE_SHA). Auto-deploying..."
-  git reset --hard origin/main
+  git pull --rebase --autostash origin main
   docker compose up -d --build --remove-orphans
   echo "[$(date -Is)] ✅ EC2 container updated to $REMOTE_SHA."
 fi
