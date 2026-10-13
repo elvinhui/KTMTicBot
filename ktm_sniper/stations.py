@@ -220,7 +220,7 @@ class KTMStationRegistry:
             ("ARAU", "ARU"),
             ("TAIPING", "TPG")
         ]
-        return [{"name": name, "code": code} for name, code in popular]
+        return [{"name": name, "code": code} for name, code in popular[:MAX_POPULAR_STATIONS_LIMIT]]
 
     @classmethod
     def all_stations(cls) -> List[Dict[str, str]]:
