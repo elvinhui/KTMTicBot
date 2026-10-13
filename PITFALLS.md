@@ -256,5 +256,12 @@
   2. KTMB KITS 选座模态框 `#seatSelect` 元素始终存在于 DOM 中（带 `modal fade`），若用户触发 `/seat` 时未先点击选座按钮或页面未完成车次激活，`#seatSelect` 不包含 `show` 类且 `aria-hidden="true"`。直接等待 `wait_for_selector("#seatSelect", state="visible")` 会超时 12000ms 失败。
 - **已验证解决方案 (Verified Solution)**:
   1. **生产守护进程强制同步 (Stateless Deploy)**：将 `ec2_watchdog.sh` 中的代码拉取逻辑由 `git pull --rebase` 改为 `git reset --hard origin/main`，确保生产宿主机上的代码版本始终严格对齐 GitHub `origin/main` 经过 CI 与 Auto-Healer 验证的最新 Commit，杜绝任何合并冲突。
-  2. **多重选座弹窗触发机制**：在 `lock_seat_and_proceed` 中，定位选座触发按钮并支持原生 `evaluate("el => el.click()")` 穿透遮罩；若未展开，自动探测 Bootstrap / jQuery `$('#seatSelect').modal('show')` 强制调起弹窗并清理残余 `.modal-backdrop`，彻底消除 12000ms 等待超时。
-
+## 18. KITS 选座触发 `CancelBooking` 弹窗拦截 `CONFIRM SEATS` 与 `/Book` 推进超时
+- **问题现象 (Root Cause)**:
+  1. 在往返双程或多席位选座流程中，旧版前端脚本在每次选座前遍历点击所有 `.btn-remove-cart`。KITS 后台在处理无有效锁定位的退选请求时，会返回错误并弹出 `#popupModal`（`Alert: Error when cancelling booking. Please try again later.`）。
+  2. 该弹窗直接覆盖在 `#seatSelect` 与底部的 `CONFIRM SEATS` / `PROCEED TO PASSENGER DETAILS` 按钮上方，阻断后续点击事件，导致 `#seatSelect` 无法关闭、无法到达 `/Book`，最终报 `未能进入乘车人页面 (KITS 提示: Alert Error when cancelling booking...)`。
+  3. Auto-Healer 自愈引擎虽然精准诊断出该根因，但由于生成补丁时目标文件选定与实际差异，触发安全护栏 `Patch rejected by guardrail: Patched content is empty`，未直接应用热修复。
+- **已验证解决方案 (Verified Solution)**:
+  1. **按需退选与弹窗阻断消除**：在 `seat_select_js` 中仅在席位数超出目标总数时才退选多余席位，杜绝无意义的退选接口调用。
+  2. **全局模态提示清理 (`dismiss_popup_alerts`)**：在选座确认与推进前后，自动扫描并点击 `#popupModalOkButton` / `#popupModalCloseButton` 或强力移除遮罩层。
+  3. **弹窗自愈重试机制**：在 `_ensure_on_book_page` 与 `engine.py` 中，一旦检测到非会话失效的页面阻断提示（如 `cancelling booking`），自动清理弹窗并重试触发提交至 `/Book`，确保订座流程具备自我修复弹性。

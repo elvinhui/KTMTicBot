@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, PropertyMock
 from ktm_sniper.browser.manager import BrowserManager
 from ktm_sniper.browser.driver import KTMBrowserDriver
 from ktm_sniper.models import SniperTaskConfig, TripInfo
@@ -202,4 +202,24 @@ def test_browser_driver_scrape_upcoming_bookings():
     assert bookings[0]["legs"][0]["tickets"][0]["ticket_no"] == "T261013679970"
 
 
+def test_dismiss_popup_alerts_and_ensure_on_book_page_recovery():
+    mock_page = MagicMock()
+    mock_page.evaluate.return_value = True
+    driver = KTMBrowserDriver(page=mock_page)
 
+    # 1. Test dismiss_popup_alerts
+    dismissed = driver.dismiss_popup_alerts()
+    assert dismissed is True
+
+    # 2. Test _ensure_on_book_page recovering from /Trip alert modal
+    # First check is on /Trip with alert, then after retry lands on /Book
+    urls = ["https://online.ktmb.com.my/Trip", "https://online.ktmb.com.my/Book"]
+    def _mock_url():
+        return urls.pop(0) if urls else "https://online.ktmb.com.my/Book"
+
+    type(mock_page).url = PropertyMock(side_effect=_mock_url)
+    driver._click_proceed_to_passenger = MagicMock(return_value=True)
+
+    # Should not raise because retry succeeds into /Book
+    driver._ensure_on_book_page(max_retries=1)
+    driver._click_proceed_to_passenger.assert_called()

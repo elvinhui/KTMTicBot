@@ -147,12 +147,12 @@ def extract_referenced_files(
     if not results:
         snippet_lower = error_snippet.lower()
         keyword_to_file = (
-            (("confirmseatbtn", "passenger", "fiuu", "duitnow", "select2", "btnupdateinsurance", "popupmodal", "乘车人", "locator.click"), "ktm_sniper/browser/driver.py"),
+            (("confirmseatbtn", "passenger", "fiuu", "duitnow", "select2", "btnupdateinsurance", "popupmodal", "乘车人", "cancelling booking", "locator.click"), "ktm_sniper/browser/driver.py"),
             (("telegram", "/seat", "/book"), "ktm_sniper/telegram_bot.py"),
             (("reserve_seat", "reserver"), "ktm_sniper/reserver.py"),
             (("ensure_authenticated", "multiple login"), "ktm_sniper/auth.py"),
             (("kits_parser", "parse_trips"), "ktm_sniper/network/kits_parser.py"),
-            (("engine", "cycle error"), "ktm_sniper/engine.py"),
+            (("engine", "cycle error", "未能进入乘车人页面"), "ktm_sniper/engine.py"),
         )
         for keywords, rel_candidate in keyword_to_file:
             if any(kw in snippet_lower for kw in keywords):

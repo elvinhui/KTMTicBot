@@ -172,20 +172,46 @@ class KTMSniperEngine:
             return _attempt()
         except RuntimeError as e:
             marker = getattr(self.browser_driver, "SESSION_EXPIRED_MARKER", "KITS_SESSION_EXPIRED")
-            if not (self.browser_driver and self.authenticator and marker in str(e)):
-                raise
-            logger.warning("⚠️ 订座时检测到 KITS 会话失效，正在重新登录并重试一次...")
-            page = self.browser_driver.page
-            try:
-                page.goto(page.url.split("/Trip")[0] if "/Trip" in (page.url or "") else "about:blank")
-            except Exception:
-                pass
-            if not self.authenticator.ensure_authenticated(page, notifier=self.notifier):
-                raise RuntimeError("KITS 重新登录失败，无法完成订座") from e
-            self.browser_driver._last_searched_pax = None
-            self.browser_driver._last_searched_return_date = "__force__"
-            self.browser_driver.navigate_to_booking()
-            return _attempt()
+            if self.browser_driver and self.authenticator and marker in str(e):
+                logger.warning("⚠️ 订座时检测到 KITS 会话失效，正在重新登录并重试一次...")
+                page = self.browser_driver.page
+                try:
+                    page.goto(page.url.split("/Trip")[0] if "/Trip" in (page.url or "") else "about:blank")
+                except Exception:
+                    pass
+                if not self.authenticator.ensure_authenticated(page, notifier=self.notifier):
+                    raise RuntimeError("KITS 重新登录失败，无法完成订座") from e
+                self.browser_driver._last_searched_pax = None
+                self.browser_driver._last_searched_return_date = "__force__"
+                self.browser_driver.navigate_to_booking()
+                return _attempt()
+            elif self.browser_driver and "未能进入乘车人页面" in str(e):
+                logger.warning(f"⚠️ 推进至乘车人页面受阻 ({e})，正在自动清理遮罩弹窗并重试...")
+                try:
+                    if hasattr(self.browser_driver, "dismiss_popup_alerts"):
+                        self.browser_driver.dismiss_popup_alerts()
+                    if hasattr(self.browser_driver, "_close_seat_modal"):
+                        self.browser_driver._close_seat_modal()
+                    time.sleep(1.0)
+                    if hasattr(self.browser_driver, "_click_proceed_to_passenger"):
+                        self.browser_driver._click_proceed_to_passenger()
+                        try:
+                            self.browser_driver.page.wait_for_url("**/Book**", timeout=10000)
+                        except Exception:
+                            pass
+                    if "/Book" in (self.browser_driver.page.url or ""):
+                        logger.info("✓ 遮罩清理后已成功进入 /Book 乘车人页面，正在提交表单...")
+                        res = self.browser_driver.fill_and_submit_passenger_form(
+                            self.task.passengers or [],
+                            task=self.task
+                        )
+                        locked_seat = getattr(self.browser_driver, "last_locked_seat", "")
+                        if isinstance(res, dict) and not res.get("selected_seat") and locked_seat:
+                            res = {**res, "selected_seat": locked_seat}
+                        return res
+                except Exception as retry_err:
+                    logger.warning(f"自动重试推进乘车人页失败: {retry_err}")
+            raise
 
     def logout(self) -> bool:
         """

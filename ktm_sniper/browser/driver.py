@@ -643,10 +643,16 @@ class KTMBrowserDriver:
                     const cands = Array.from(document.querySelectorAll('button, a, input[type=submit]'))
                         .filter(b => /PROCEED TO PASSENGER/i.test(b.innerText || b.value || '') || b.classList.contains('btn-passenger'));
                     const vis = cands.find(b => b.offsetParent !== null && !b.disabled) || cands[0];
-                    if (!vis) return false;
-                    vis.scrollIntoView({block: 'center'});
-                    vis.click();
-                    return true;
+                    if (vis) {
+                        try { vis.scrollIntoView({block: 'center'}); } catch (e) {}
+                        vis.click();
+                        return true;
+                    }
+                    const form = document.querySelector('form[action*="/Book"], form#tripForm, form#formBook');
+                    if (form) {
+                        try { form.submit(); return true; } catch (e) {}
+                    }
+                    return false;
                 }
             """)
             return bool(clicked)
@@ -674,7 +680,37 @@ class KTMBrowserDriver:
         except Exception:
             return ""
 
-    def _ensure_on_book_page(self) -> None:
+    def dismiss_popup_alerts(self) -> bool:
+        """
+        Dismisses any unexpected alert modals (e.g. #popupModal, 'Error when cancelling booking')
+        that might block pointer events or seat confirmation on /Trip or /Book pages.
+        """
+        try:
+            return bool(self.page.evaluate("""
+                () => {
+                    let dismissed = false;
+                    const popups = document.querySelectorAll('#popupModal, #validationSummaryModal, .modal.show:not(#seatSelect)');
+                    for (const pop of popups) {
+                        const btn = pop.querySelector('#popupModalOkButton, #popupModalCloseButton, .close, [data-dismiss="modal"], [data-bs-dismiss="modal"], button');
+                        if (btn) {
+                            try { btn.click(); dismissed = true; } catch (e) {}
+                        }
+                        pop.classList.remove('show');
+                        pop.style.display = 'none';
+                        dismissed = true;
+                    }
+                    const seatModal = document.querySelector('#seatSelect');
+                    const seatOpen = seatModal && (seatModal.classList.contains('show') || seatModal.style.display === 'block');
+                    if (!seatOpen) {
+                        document.querySelectorAll('.modal-backdrop').forEach(b => b.remove());
+                    }
+                    return dismissed;
+                }
+            """))
+        except Exception:
+            return False
+
+    def _ensure_on_book_page(self, max_retries: int = 1) -> None:
         """Raises a descriptive error if the browser did not reach the KITS /Book passenger page."""
         url = self.page.url or ""
         if "/Book" in url:
@@ -685,6 +721,29 @@ class KTMBrowserDriver:
         except Exception:
             pass
         alert = self._collect_page_alert_text()
+
+        # If blocked on /Trip by an alert modal (e.g. "Error when cancelling booking") or lingering popup
+        if max_retries > 0 and ("/Trip" in url or not url):
+            logger.warning(f"⚠️ 正在处理 /Trip 页面提示并尝试重新推进至乘车人页: {alert or '未知遮罩'}")
+            self.dismiss_popup_alerts()
+            self._close_seat_modal()
+            time.sleep(1.0)
+            self._click_proceed_to_passenger()
+            try:
+                self.page.wait_for_url("**/Book**", timeout=10000)
+                if "/Book" in (self.page.url or ""):
+                    return
+            except Exception:
+                pass
+            try:
+                self.page.wait_for_load_state("networkidle", timeout=6000)
+                if "/Book" in (self.page.url or ""):
+                    return
+            except Exception:
+                pass
+            url = self.page.url or ""
+            alert = self._collect_page_alert_text()
+
         try:
             self.page.screenshot(path="data/debug_proceed_fail.png", full_page=True)
         except Exception:
@@ -884,10 +943,13 @@ class KTMBrowserDriver:
                         fp.value = String(targetCount);
                     }
 
-                    // Clear any stale selected seats in cart before selecting targetCount seats
-                    const removeBtns = Array.from(document.querySelectorAll('#seatSelect .btn-remove-cart'));
-                    for (const rb of removeBtns) {
-                        try { rb.click(); } catch (e) {}
+                    // Only clear excess seats if cart currently exceeds targetCount, avoiding KITS CancelBooking alert storms
+                    const removeBtns = Array.from(document.querySelectorAll('#seatSelect .cart .btn-remove-cart, #seatSelect .btn-remove-cart'));
+                    if (removeBtns.length > targetCount) {
+                        const excess = removeBtns.length - targetCount;
+                        for (let i = 0; i < excess; i++) {
+                            try { removeBtns[i].click(); } catch (e) {}
+                        }
                     }
 
                     const userSpecificSeats = pref.split(/[, ]+/).filter(s => s.length > 0 && !['AUTO', 'WINDOW', 'AISLE', 'ANY', 'DEFAULT'].includes(s));
@@ -1161,20 +1223,56 @@ class KTMBrowserDriver:
                 self.last_return_trip_info["selected_seat"] = return_target_seat_no
                 logger.info(f"💺 返程车次已选定座位: {return_target_seat_no}")
 
+                # Confirm return seat selection (match button by id, class or text)
+                self.dismiss_popup_alerts()
                 try:
-                    self.page.wait_for_selector("#confirmSeatBtn:not(.disabled-btn)", timeout=5000)
-                except Exception:
-                    pass
-                confirm_btn2 = self.page.locator("#confirmSeatBtn").first
-                if confirm_btn2.count() > 0:
-                    confirm_btn2.evaluate("e => e.click()")
-                time.sleep(2.0)
-                try:
-                    self.page.wait_for_selector("#seatSelect", state="hidden", timeout=8000)
+                    self.page.wait_for_selector("#confirmSeatBtn:not(.disabled-btn), #seatSelect button:has-text('CONFIRM SEATS')", timeout=5000)
                 except Exception:
                     pass
 
+                confirm_clicked = False
+                try:
+                    c_btn = self.page.locator("#confirmSeatBtn:not(.disabled-btn), #seatSelect button:has-text('CONFIRM SEATS')").first
+                    if c_btn.count() > 0:
+                        c_btn.scroll_into_view_if_needed(timeout=2000)
+                        c_btn.click(timeout=5000, force=True)
+                        confirm_clicked = True
+                except Exception as ex:
+                    logger.warning(f"常规点击返程确认座位按钮失败，尝试 JS 原生触发: {ex}")
+
+                if not confirm_clicked:
+                    try:
+                        self.page.evaluate("""() => {
+                            const btn = document.querySelector('#confirmSeatBtn') || Array.from(document.querySelectorAll('#seatSelect button')).find(b => /CONFIRM SEATS/i.test(b.innerText || ''));
+                            if (btn) btn.click();
+                        }""")
+                    except Exception:
+                        pass
+
+                time.sleep(2.0)
+                self.dismiss_popup_alerts()
+                try:
+                    self.page.wait_for_selector("#seatSelect", state="hidden", timeout=5000)
+                except Exception:
+                    # If still visible, clear any popup modal alert, retry confirm once, and ensure modal is dismissed
+                    self.dismiss_popup_alerts()
+                    try:
+                        self.page.evaluate("""() => {
+                            const btn = document.querySelector('#confirmSeatBtn') || Array.from(document.querySelectorAll('#seatSelect button')).find(b => /CONFIRM SEATS/i.test(b.innerText || ''));
+                            if (btn && !btn.disabled) btn.click();
+                        }""")
+                    except Exception:
+                        pass
+                    time.sleep(1.0)
+                    if self.page.locator("#seatSelect").is_visible():
+                        self._close_seat_modal()
+
             # 6. Click PROCEED TO PASSENGER DETAILS
+            # Dismiss any popup or stray backdrop first
+            self.dismiss_popup_alerts()
+            self.dismiss_modals()
+            if self.page.locator("#seatSelect").is_visible():
+                self._close_seat_modal()
             try:
                 self.page.wait_for_selector("button:has-text('PROCEED TO PASSENGER DETAILS'), .btn-passenger", state="visible", timeout=6000)
             except Exception:
@@ -1184,7 +1282,13 @@ class KTMBrowserDriver:
             try:
                 self.page.wait_for_url("**/Book**", timeout=15000)
             except Exception:
-                pass
+                # If still on /Trip, dismiss any modal alerts and retry proceed click once
+                self.dismiss_modals()
+                self._click_proceed_to_passenger()
+                try:
+                    self.page.wait_for_url("**/Book**", timeout=10000)
+                except Exception:
+                    pass
             try:
                 self.page.wait_for_load_state("networkidle", timeout=10000)
             except Exception:
