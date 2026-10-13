@@ -812,7 +812,9 @@ class KTMBrowserDriver:
                             const triggers = Array.from(document.querySelectorAll(
                                 '[data-target="#seatSelect"], [data-bs-target="#seatSelect"], '
                                 + 'a[href="#seatSelect"], button.select-seat, .btn-select-seat, '
-                                + '[onclick*="seatSelect"], [data-toggle="modal"][data-target*="seat"]'
+                                + '[onclick*="seatSelect"], [data-toggle="modal"][data-target*="seat"], '
+                                + 'button[onclick*="Book"], a[onclick*="Book"], '
+                                + 'input[type="submit"][value*="Book"], button.btn-primary'
                             )).filter(el => el.offsetParent !== null && !el.disabled);
                             if (triggers.length) {
                                 triggers[0].scrollIntoView({block: 'center'});
@@ -828,7 +830,17 @@ class KTMBrowserDriver:
                                 window.bootstrap.Modal.getOrCreateInstance(modal).show();
                                 return true;
                             }
-                            return false;
+                            // Last-resort: force the modal visible so downstream code can proceed
+                            modal.classList.add('show');
+                            modal.style.display = 'block';
+                            modal.removeAttribute('aria-hidden');
+                            document.body.classList.add('modal-open');
+                            if (!document.querySelector('.modal-backdrop')) {
+                                const bd = document.createElement('div');
+                                bd.className = 'modal-backdrop fade show';
+                                document.body.appendChild(bd);
+                            }
+                            return true;
                         }
                     """)
                     if opened:
