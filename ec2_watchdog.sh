@@ -32,26 +32,28 @@ if [ "$LOCAL_SHA" != "$REMOTE_SHA" ]; then
   echo "[$(date -Is)] ✅ EC2 container updated to $REMOTE_SHA."
 fi
 
-# ── 2. Check container logs for unhandled Tracebacks (Runtime Self-Healing) ──
+# ── 2. Check container logs for unhandled Tracebacks or runtime ERRORs ───────
 RECENT_LOGS=$(docker compose logs --since=2m --no-log-prefix ktm_sniper_bot 2>/dev/null || true)
 
-if echo "$RECENT_LOGS" | grep -q "Traceback (most recent call last):"; then
-  CRASH_HASH=$(echo "$RECENT_LOGS" | tail -n 30 | sha256sum | awk '{print $1}')
+# Match either raw Python Tracebacks OR caught logger.error() entries from ktm_sniper
+if echo "$RECENT_LOGS" | grep -Eq "Traceback \(most recent call last\):|\[ERROR\]|Encountered cycle error:|Browser scraping error:|Fatal error"; then
+  CRASH_HASH=$(echo "$RECENT_LOGS" | grep -E "Traceback|Error|Exception|\[ERROR\]" | tail -n 20 | sha256sum | awk '{print $1}')
   LAST_HASH_FILE="/tmp/ktm_last_crash_hash.txt"
   PREV_HASH=$(cat "$LAST_HASH_FILE" 2>/dev/null || echo "")
 
   if [ "$CRASH_HASH" != "$PREV_HASH" ]; then
     echo "$CRASH_HASH" > "$LAST_HASH_FILE"
-    echo "[$(date -Is)] ⚠️ Unhandled runtime traceback detected in ktm_sniper_bot!"
+    echo "[$(date -Is)] ⚠️ Runtime error/traceback detected in ktm_sniper_bot!"
 
     if [ -n "${GH_PAT:-}" ]; then
-      ESCAPED_LOG=$(echo "$RECENT_LOGS" | tail -n 60 | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')
+      ESCAPED_LOG=$(echo "$RECENT_LOGS" | tail -n 80 | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')
       curl -sS -X POST \
         -H "Authorization: Bearer $GH_PAT" \
         -H "Accept: application/vnd.github+json" \
         "https://api.github.com/repos/elvinhui/KTMTicBot/actions/workflows/auto_healer.yml/dispatches" \
         -d "{\"ref\":\"main\",\"inputs\":{\"ec2_error_log\":$ESCAPED_LOG}}"
-      echo "[$(date -Is)] 🤖 Dispatched runtime traceback to GitHub Actions Auto-Healer!"
+      echo "[$(date -Is)] 🤖 Dispatched runtime error log to GitHub Actions Auto-Healer!"
     fi
   fi
 fi
+
