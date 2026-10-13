@@ -499,6 +499,71 @@ def test_command_handler_return_time_point_selection(sample_engine):
     assert sample_engine.task.return_preferred_trains == []
 
 
+def test_command_handler_insurance_toggle(sample_engine):
+    handler = TelegramCommandHandler(engine=sample_engine, authorized_chat_id="1682009086", expiry_timeout_seconds=0)
+    assert sample_engine.task.include_insurance is False
+
+    # 1. Query default insurance status
+    res_info = handler.handle_message(chat_id="1682009086", text="/insurance")
+    assert "KTMB Takaful 行程保险设置" in res_info
+    assert "默认不购买" in res_info
+
+    # 2. Enable insurance via /insurance yes
+    res_yes = handler.handle_message(chat_id="1682009086", text="/insurance yes")
+    assert "购买 Takaful 行程保险 (YES)" in res_yes
+    assert sample_engine.task.include_insurance is True
+    # 3. Disable insurance via /set insurance no
+    res_no = handler.handle_message(chat_id="1682009086", text="/set insurance no")
+    assert "不购买 Takaful 行程保险 (NO)" in res_no
+    assert sample_engine.task.include_insurance is False
+
+
+def test_command_handler_return_seat_selection(sample_engine):
+    import dataclasses
+    handler = TelegramCommandHandler(engine=sample_engine, authorized_chat_id="1682009086", expiry_timeout_seconds=0)
+    # Enable round trip mode
+    sample_engine.task = dataclasses.replace(sample_engine.task, return_date="2027-02-08")
+
+    # 1. /ret_seat query or set
+    res_set_ret = handler.handle_message(chat_id="1682009086", text="/ret_seat 5A")
+    assert "返程座位已选定" in res_set_ret
+    assert "5A" in res_set_ret
+    assert sample_engine.task.return_seat_preference == "5A"
+    assert sample_engine.selected_return_seat == "5A"
+
+    # 2. /return_seat window
+    res_window = handler.handle_message(chat_id="1682009086", text="/return_seat window")
+    assert "WINDOW" in res_window
+    assert sample_engine.task.return_seat_preference == "WINDOW"
+    assert sample_engine.selected_return_seat == "WINDOW"
+
+    # 3. /set return_seat 6B
+    res_set_cmd = handler.handle_message(chat_id="1682009086", text="/set return_seat 6B")
+    assert "返程座位已选定" in res_set_cmd
+    assert "6B" in res_set_cmd
+    assert sample_engine.task.return_seat_preference == "6B"
+
+    # 4. Combo /seat 3A / 5B
+    trip_mock = {"train_no": "9326", "train_class": "Platinum", "departure_time": "09:55"}
+    sample_engine.selected_trip = trip_mock
+    sample_engine.lock_real_trip = MagicMock(return_value={"status": "ok"})
+    sample_engine.execute_real_booking = MagicMock(return_value={"status": "ok", "booking_id": "TEST1234"})
+    res_combo = handler.handle_message(chat_id="1682009086", text="/seat 3A / 5B")
+    assert "3A" in res_combo
+    assert "5B" in res_combo
+    assert sample_engine.selected_return_seat == "5B"
+    sample_engine.execute_real_booking.assert_called_once_with(trip=trip_mock, seat_no="3A", return_seat_no="5B")
+
+    # 5. /seat 4A ret 6A syntax
+    sample_engine.selected_trip = trip_mock
+    sample_engine.execute_real_booking.reset_mock()
+    res_combo2 = handler.handle_message(chat_id="1682009086", text="/seat 4A ret 6A")
+    assert "4A" in res_combo2
+    assert "6A" in res_combo2
+    sample_engine.execute_real_booking.assert_called_once_with(trip=trip_mock, seat_no="4A", return_seat_no="6A")
+
+
+
 
 
 

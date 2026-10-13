@@ -154,38 +154,47 @@ class TelegramTicketNotifier:
         return_trips: Optional[List[Any]] = None,
         selected_return_trip: Optional[Any] = None,
         return_time_window: Optional[str] = None,
+        include_insurance: bool = False,
+        return_coaches: Optional[Any] = None,
+        selected_return_seat: Optional[str] = None,
     ) -> str:
-        coach_blocks = []
-        if isinstance(coaches, dict):
-            for coach_name, seat_types in list(coaches.items())[:3]:
-                if isinstance(seat_types, dict):
-                    window_seats = ", ".join(seat_types.get("window", [])[:8]) or "暂无"
-                    aisle_seats = ", ".join(seat_types.get("aisle", [])[:8]) or "暂无"
-                else:
-                    window_seats = ", ".join(str(s) for s in seat_types[:8]) or "暂无"
-                    aisle_seats = "暂无"
-                coach_blocks.append(
-                    f"🚆 *Coach {coach_name}*:\n"
-                    f"  • 靠窗 (Window): `{window_seats}`\n"
-                    f"  • 走道 (Aisle):  `{aisle_seats}`"
-                )
-        elif isinstance(coaches, list):
-            for c in coaches[:3]:
-                c_name = c.get("coach", "Coach")
-                seats = c.get("seats", [])
-                win = [s.get("seat_no") for s in seats if "win" in str(s.get("type", "")).lower()]
-                ais = [s.get("seat_no") for s in seats if "ais" in str(s.get("type", "")).lower()]
-                if not win and not ais and seats:
-                    win = [s.get("seat_no") for s in seats[:4]]
-                coach_blocks.append(
-                    f"🚆 *{c_name}*:\n"
-                    f"  • 靠窗 (Window): `{', '.join(filter(None, win)) or '暂无'}`\n"
-                    f"  • 走道 (Aisle):  `{', '.join(filter(None, ais)) or '暂无'}`"
-                )
+        def _build_coach_blocks(c_data):
+            blocks = []
+            if isinstance(c_data, dict):
+                for coach_name, seat_types in list(c_data.items())[:3]:
+                    if isinstance(seat_types, dict):
+                        window_seats = ", ".join(seat_types.get("window", [])[:8]) or "暂无"
+                        aisle_seats = ", ".join(seat_types.get("aisle", [])[:8]) or "暂无"
+                    else:
+                        window_seats = ", ".join(str(s) for s in seat_types[:8]) or "暂无"
+                        aisle_seats = "暂无"
+                    blocks.append(
+                        f"🚆 *Coach {coach_name}*:\n"
+                        f"  • 靠窗 (Window): `{window_seats}`\n"
+                        f"  • 走道 (Aisle):  `{aisle_seats}`"
+                    )
+            elif isinstance(c_data, list):
+                for c in c_data[:3]:
+                    c_name = c.get("coach", "Coach")
+                    seats = c.get("seats", [])
+                    win = [s.get("seat_no") for s in seats if "win" in str(s.get("type", "")).lower()]
+                    ais = [s.get("seat_no") for s in seats if "ais" in str(s.get("type", "")).lower()]
+                    if not win and not ais and seats:
+                        win = [s.get("seat_no") for s in seats[:4]]
+                    blocks.append(
+                        f"🚆 *{c_name}*:\n"
+                        f"  • 靠窗 (Window): `{', '.join(filter(None, win)) or '暂无'}`\n"
+                        f"  • 走道 (Aisle):  `{', '.join(filter(None, ais)) or '暂无'}`"
+                    )
+            return blocks
+
+        coach_blocks = _build_coach_blocks(coaches)
+        ret_coach_blocks = _build_coach_blocks(return_coaches) if return_coaches else []
 
         dep_date_line = f"• *出发日期*: `{date}`\n" if date else ""
         ret_date_line = ""
         ret_options_block = ""
+        ret_coach_section = ""
         if return_date:
             ret_date_line = f"• *返程日期*: `{return_date}` (往返双程)\n"
             if selected_return_trip:
@@ -199,6 +208,12 @@ class TelegramTicketNotifier:
                 ret_date_line += f"• *已选返程时间点*: `{return_time_window}`\n"
             else:
                 ret_date_line += "• *返程时间点*: `未选择 (默认 AUTO 自动匹配)`\n"
+
+            ret_seat_disp = selected_return_seat or "未指定 (默认 AUTO 自动同行位)"
+            ret_date_line += f"• *已选返程座位*: `{ret_seat_disp}`\n"
+
+            if ret_coach_blocks:
+                ret_coach_section = "\n🛬 *【返程车次可选车厢与座位】*:\n" + "\n\n".join(ret_coach_blocks) + "\n"
 
             if return_trips:
                 ret_lines = ["\n🛬 *【可选返程时间点 (可随时切换)】*:"]
@@ -214,17 +229,28 @@ class TelegramTicketNotifier:
                     )
                 ret_options_block = "\n".join(ret_lines) + "\n"
 
+        ins_status = "已开启 (购买)" if include_insurance else "默认不购买 (免除额外保费)"
+        ins_hint = "/insurance no 可关闭" if include_insurance else "/insurance yes 可开启"
+        ins_line = f"• *Takaful 行程保险*: {ins_status}（发 `{ins_hint}`）\n"
+
+        outbound_title = "🛫 *【去程车次可选车厢与座位】*:\n" if return_date else ""
+
         msg = (
             f"💺 *【请选择车厢与座位】* 💺\n\n"
-            f"• *车次*: *{train_no}* (出发时间: `{depart_time}`)\n"
+            f"• *去程车次*: *{train_no}* (出发时间: `{depart_time}`)\n"
             f"{dep_date_line}"
-            f"{ret_date_line}\n"
+            f"{ret_date_line}"
+            f"{ins_line}\n"
+            f"{outbound_title}"
             + "\n\n".join(coach_blocks)
+            + f"\n{ret_coach_section}"
             + f"{ret_options_block}\n\n"
-            f"👉 *请回复指定座位*:\n"
-            f"• 回复 `/seat <座位号>` (例如: `/seat 3A` 锁定指定座)\n"
-            f"• 回复 `/seat auto` (由系统自动挑选最优同行位)\n"
-            f"• 回复 `/ret_time <序号/时间>` (例如: `/ret_time 1` 或 `/return_time 07:11` 选择返程时间点)\n"
+            f"👉 *座位选择指令*:\n"
+            f"• 去程选座: 回复 `/seat <座位号>` (如 `/seat 3A` 或 `/seat auto`)\n"
+            f"• 返程选座: 回复 `/ret_seat <座位号>` (如 `/ret_seat 5A` 或 `/ret_seat auto`)\n"
+            f"• 双程合并选座: 回复 `/seat <去程座位> / <返程座位>` (例如: `/seat 3A / 5A`)\n"
+            f"• 回复 `/ret_time <序号/时间>` (例如: `/ret_time 1` 或 `/return_time 07:11`)\n"
+            f"• 回复 `/insurance yes/no` 设置是否购买保险\n"
             f"• 回复 `/cancel` 放弃并继续监控"
         )
         return msg

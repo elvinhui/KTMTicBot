@@ -61,17 +61,23 @@ class TaskRepository:
                         return_date TEXT,
                         return_time_from TEXT,
                         return_time_to TEXT,
+                        return_preferred_trains TEXT,
+                        return_seat_preference TEXT,
+                        include_insurance INTEGER DEFAULT 0,
                         leg_type TEXT DEFAULT 'ONE_WAY',
                         created_at REAL,
                         updated_at REAL
                     )
                 """)
-                # Auto-migration for new round trip and masked passenger columns
+                # Auto-migration for new round trip, insurance, seat pref, and masked passenger columns
                 for col_name, col_type in [
                     ("is_round_trip", "INTEGER DEFAULT 0"),
                     ("return_date", "TEXT"),
                     ("return_time_from", "TEXT"),
                     ("return_time_to", "TEXT"),
+                    ("return_preferred_trains", "TEXT"),
+                    ("return_seat_preference", "TEXT"),
+                    ("include_insurance", "INTEGER DEFAULT 0"),
                     ("leg_type", "TEXT DEFAULT 'ONE_WAY'"),
                     ("passengers_masked", "TEXT")
                 ]:
@@ -229,8 +235,8 @@ class TaskRepository:
                         preferred_trains, preferred_classes, seat_preference,
                         required_seats, passengers, passengers_masked, auto_reserve, status,
                         booking_id, is_round_trip, return_date, return_time_from, return_time_to,
-                        leg_type, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        return_preferred_trains, return_seat_preference, include_insurance, leg_type, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     task_id,
                     config.origin,
@@ -251,6 +257,9 @@ class TaskRepository:
                     config.return_date,
                     config.return_time_from,
                     config.return_time_to,
+                    json.dumps(getattr(config, "return_preferred_trains", None) or []),
+                    getattr(config, "return_seat_preference", None),
+                    1 if getattr(config, "include_insurance", False) else 0,
                     getattr(config, "leg_type", "ONE_WAY"),
                     now,
                     now
@@ -487,12 +496,15 @@ class TaskRepository:
                 email=email_val
             ))
 
-        # Extract optional round trip fields safely
+        # Extract optional round trip and insurance fields safely
         keys = row.keys()
         is_round_trip = bool(row["is_round_trip"]) if "is_round_trip" in keys else False
         return_date = row["return_date"] if "return_date" in keys else None
         return_time_from = row["return_time_from"] if "return_time_from" in keys and row["return_time_from"] else "00:00"
         return_time_to = row["return_time_to"] if "return_time_to" in keys and row["return_time_to"] else "23:59"
+        return_preferred_trains = json.loads(row["return_preferred_trains"] or "[]") if "return_preferred_trains" in keys and row["return_preferred_trains"] else []
+        return_seat_preference = row["return_seat_preference"] if "return_seat_preference" in keys else None
+        include_insurance = bool(row["include_insurance"]) if "include_insurance" in keys and row["include_insurance"] else False
         leg_type = row["leg_type"] if "leg_type" in keys and row["leg_type"] else ("OUTBOUND" if is_round_trip else "ONE_WAY")
 
         return SniperTaskConfig(
@@ -513,5 +525,8 @@ class TaskRepository:
             return_date=return_date,
             return_time_from=return_time_from,
             return_time_to=return_time_to,
+            return_preferred_trains=return_preferred_trains,
+            return_seat_preference=return_seat_preference,
+            include_insurance=include_insurance,
             leg_type=leg_type
         )

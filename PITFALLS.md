@@ -243,3 +243,18 @@
   1. 在 Step 2 循环检测并触发 `#popupModal.show #popupModalOkButton` / `purchase Takaful` 确认按钮（使用 `evaluate("el => el.click()")` 避免遮罩动画拦截）。
   2. 在 Step 3 的选择器中显式排除 `#btnUpdateInsuranceYes`、`#btnUpdateInsuranceNo` 与 `#btnConfirmPayment`（`:not(#btnUpdateInsuranceYes):not(#btnUpdateInsuranceNo):not(#btnConfirmPayment)`），并增加 JS 原生点击兜底。
 
+## 返程日期席位选择与往返车厢布局抽取支持 (/ret_seat 与 /seat 组合语法)
+- **根因**:
+  1. 往返双程场景下，KITS `/Trip` 页面去程和返程在同一个页面中展示为两个不同表格（去程为常规 trip 表格，返程为 `tbody.return-trips`）。原有 `fetch_seats_layout` 仅支持去程车次按钮，导致调用 `/book 1` 时只展示了去程车厢座位图，用户无法查看返程可选座位。
+  2. 此前仅支持单向 `seat_preference`，在提交往返订票时，返程席位缺少独立控制指令，无法在同一会话中分别指定去程与返程不同座位。
+- **解决**:
+  1. 在 `KTMBrowserDriver.fetch_seats_layout` 中增加 `leg="RETURN"` 支持，针对返程定位 `tbody.return-trips tr` 提取车厢图；并在 `KTMSeatReserver` 和 `KTMBrowserDriver.lock_seat_and_proceed` 间全链路透传 `return_seat_no`。
+  2. 在 `SniperTaskConfig` 与 SQLite 中持久化 `return_seat_preference`；新增 `/ret_seat <座位号>`（及 `/return_seat`）独立设定返程座位，同时在 `/seat` 中支持复合斜杠语法 `/seat 3A / 5A` 与 `/seat 3A ret 5A`，实现一步指定双程席位。
+## 17. EC2 守护进程 Git 自动部署冲突与 `#seatSelect` 弹窗未展开超时
+- **问题现象 (Root Cause)**:
+  1. EC2 上部署的 `ec2_watchdog.sh` 此前使用 `git pull --rebase --autostash origin main`。当生产服务器上的本地文件被手动修改或未加入版本控制时，`--autostash` 会在 GitHub Actions 自动合并自愈分支后遭遇 Git 合并冲突，将 `<<<<<<< Updated upstream` 冲突标记写入代码，导致 Docker 构建后容器在启动时直接报 `SyntaxError: invalid syntax` 并进入 Crash 循环。
+  2. KTMB KITS 选座模态框 `#seatSelect` 元素始终存在于 DOM 中（带 `modal fade`），若用户触发 `/seat` 时未先点击选座按钮或页面未完成车次激活，`#seatSelect` 不包含 `show` 类且 `aria-hidden="true"`。直接等待 `wait_for_selector("#seatSelect", state="visible")` 会超时 12000ms 失败。
+- **已验证解决方案 (Verified Solution)**:
+  1. **生产守护进程强制同步 (Stateless Deploy)**：将 `ec2_watchdog.sh` 中的代码拉取逻辑由 `git pull --rebase` 改为 `git reset --hard origin/main`，确保生产宿主机上的代码版本始终严格对齐 GitHub `origin/main` 经过 CI 与 Auto-Healer 验证的最新 Commit，杜绝任何合并冲突。
+  2. **多重选座弹窗触发机制**：在 `lock_seat_and_proceed` 中，定位选座触发按钮并支持原生 `evaluate("el => el.click()")` 穿透遮罩；若未展开，自动探测 Bootstrap / jQuery `$('#seatSelect').modal('show')` 强制调起弹窗并清理残余 `.modal-backdrop`，彻底消除 12000ms 等待超时。
+

@@ -103,7 +103,9 @@ class SniperTaskConfig:
     return_time_to: str = "23:59"
     return_preferred_trains: List[str] = field(default_factory=list)
     return_preferred_classes: List[str] = field(default_factory=list)
+    return_seat_preference: Optional[str] = None
     require_confirmation: bool = False
+    include_insurance: bool = False
 
     def __post_init__(self):
         if self.origin.strip().upper() == self.destination.strip().upper():
@@ -139,12 +141,13 @@ class SniperTaskConfig:
             time_to=self.return_time_to,
             preferred_trains=self.return_preferred_trains or self.preferred_trains,
             preferred_classes=self.return_preferred_classes or self.preferred_classes,
-            seat_preference=self.seat_preference,
+            seat_preference=self.return_seat_preference or self.seat_preference,
             required_seats=self.required_seats,
             passengers=self.passengers,
             auto_reserve=self.auto_reserve,
             is_round_trip=False,
-            leg_type="RETURN"
+            leg_type="RETURN",
+            include_insurance=self.include_insurance,
         )
 
     def matches_trip(self, trip: TripInfo) -> bool:

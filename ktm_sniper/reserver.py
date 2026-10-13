@@ -39,7 +39,9 @@ class KTMSeatReserver:
         passenger: Optional[Union[Dict[str, Any], Passenger]] = None,
         passengers: Optional[List[Union[Dict[str, Any], Passenger]]] = None,
         driver=None,
-        task: Optional[Any] = None
+        task: Optional[Any] = None,
+        return_seat_preference: Optional[str] = None,
+        return_train_no: Optional[str] = None,
     ) -> Dict[str, Any]:
         pass_list: List[Union[Dict[str, Any], Passenger]] = []
         if passengers:
@@ -57,8 +59,18 @@ class KTMSeatReserver:
 
         # 1. Real Playwright browser driver execution
         if driver is not None:
-            locked_seat = driver.lock_seat_and_proceed(seat_no=seat_preference, train_no=trip_id, task=task)
-            res = driver.fill_and_submit_passenger_form(pass_list)
+            ret_seat = return_seat_preference or (getattr(task, "return_seat_preference", None) if task else None)
+            locked_seat = driver.lock_seat_and_proceed(
+                seat_no=seat_preference,
+                train_no=trip_id,
+                task=task,
+                return_train_no=return_train_no,
+                return_seat_no=ret_seat,
+            )
+            try:
+                res = driver.fill_and_submit_passenger_form(pass_list, task=task)
+            except TypeError:
+                res = driver.fill_and_submit_passenger_form(pass_list)
             if isinstance(res, dict) and not res.get("selected_seat") and isinstance(locked_seat, str) and locked_seat:
                 res = {**res, "selected_seat": locked_seat}
             return res

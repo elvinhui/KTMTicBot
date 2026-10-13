@@ -65,7 +65,9 @@ class KTMSniperEngine:
         self.last_found_return_trips: List[Any] = []
         self.selected_trip: Optional[Any] = None
         self.selected_return_trip: Optional[Any] = None
+        self.selected_return_seat: Optional[str] = getattr(task, "return_seat_preference", None)
         self.available_seats_cache: Dict[str, Any] = {}
+        self.available_return_seats_cache: Dict[str, Any] = {}
         self.require_confirmation: bool = getattr(task, "require_confirmation", False)
 
     def run_in_browser_thread(self, fn, *args, timeout: float = 60.0, **kwargs):
@@ -118,7 +120,17 @@ class KTMSniperEngine:
 
     def _fetch_seats_layout_sync(self, train_no: str) -> Dict[str, Dict[str, List[str]]]:
         if self.browser_driver:
-            return self.browser_driver.fetch_seats_layout(train_no, task=self.task)
+            return self.browser_driver.fetch_seats_layout(train_no, task=self.task, leg="DEPART")
+        return self._get_fallback_seats_layout()
+
+    def fetch_return_seats_layout(self, train_no: str) -> Dict[str, Dict[str, List[str]]]:
+        if self.browser_driver:
+            return self.run_in_browser_thread(self._fetch_return_seats_layout_sync, train_no)
+        return self._get_fallback_seats_layout()
+
+    def _fetch_return_seats_layout_sync(self, train_no: str) -> Dict[str, Dict[str, List[str]]]:
+        if self.browser_driver:
+            return self.browser_driver.fetch_seats_layout(train_no, task=self.task, leg="RETURN")
         return self._get_fallback_seats_layout()
 
     def _get_fallback_seats_layout(self) -> Dict[str, Dict[str, List[str]]]:
@@ -133,22 +145,27 @@ class KTMSniperEngine:
             }
         }
 
-    def execute_real_booking(self, trip: Any, seat_no: str = "auto") -> Dict[str, Any]:
-        return self.run_in_browser_thread(self._execute_real_booking_sync, trip, seat_no)
+    def execute_real_booking(self, trip: Any, seat_no: str = "auto", return_seat_no: Optional[str] = None) -> Dict[str, Any]:
+        return self.run_in_browser_thread(self._execute_real_booking_sync, trip, seat_no, return_seat_no)
 
-    def _execute_real_booking_sync(self, trip: Any, seat_no: str = "auto") -> Dict[str, Any]:
+    def _execute_real_booking_sync(self, trip: Any, seat_no: str = "auto", return_seat_no: Optional[str] = None) -> Dict[str, Any]:
         train_no = getattr(trip, "train_no", trip.get("train_no") if isinstance(trip, dict) else "9044")
         if self.browser_driver and not self.browser_driver.is_logged_in() and self.authenticator:
             logger.info("🔐 正在为官方订座执行认证登录...")
             self.authenticator.ensure_authenticated(self.browser_driver.page)
 
         def _attempt():
+            ret_seat_target = return_seat_no or getattr(self, "selected_return_seat", None) or getattr(self.task, "return_seat_preference", None)
+            sel_ret_trip = getattr(self, "selected_return_trip", None)
+            ret_t_no = getattr(sel_ret_trip, "train_no", sel_ret_trip.get("train_no") if isinstance(sel_ret_trip, dict) else None) if sel_ret_trip else None
             return self.reserver.reserve_seat(
                 trip_id=train_no,
                 seat_preference=seat_no,
                 passengers=self.task.passengers,
                 driver=self.browser_driver,
-                task=self.task
+                task=self.task,
+                return_seat_preference=ret_seat_target,
+                return_train_no=ret_t_no,
             )
 
         try:
@@ -295,6 +312,9 @@ class KTMSniperEngine:
                 "is_round_trip": bool(self.task.is_round_trip or self.task.return_date),
                 "return_date": self.task.return_date,
                 "return_time_window": f"{self.task.return_time_from} - {self.task.return_time_to}" if self.task.return_date else "N/A",
+                "seat_preference": self.task.seat_preference,
+                "return_seat_preference": getattr(self.task, "return_seat_preference", None) or self.selected_return_seat or "AUTO",
+                "include_insurance": bool(getattr(self.task, "include_insurance", False)),
                 "passengers": [f"{p.name} ({p.masked_id})" for p in self.task.passengers]
             }
 

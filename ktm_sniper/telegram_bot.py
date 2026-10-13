@@ -66,6 +66,12 @@ class TelegramCommandHandler:
             parts = ["/seat", seat_match.group(1)]
             command = "/seat"
 
+        # Support spaceless /ret_seat5A, /return_seat5A, /rseat5A
+        ret_seat_match = re.match(r"^/(?:return_seat|ret_seat|rseat)(\w+)$", command)
+        if ret_seat_match:
+            parts = ["/return_seat", ret_seat_match.group(1)]
+            command = "/return_seat"
+
         response = None
         # Handle command routing
         if command in ("/status", "/info", "状态", "info"):
@@ -84,6 +90,8 @@ class TelegramCommandHandler:
             response = self._handle_list_passengers()
         elif command in ("/clear_passengers", "清空乘客"):
             response = self._handle_clear_passengers()
+        elif command in ("/insurance", "/takaful", "保险", "行程保险"):
+            response = self._handle_insurance(parts[1:])
         elif command == "/set":
             response = self._handle_set(parts[1:])
         elif command in ("/return", "/return_date", "/ret_date", "返程", "返程日期"):
@@ -92,6 +100,8 @@ class TelegramCommandHandler:
             response = self._handle_return_time(parts[1:])
         elif command in ("/return_train", "/return_trains", "/ret_train", "返程车次"):
             response = self._handle_set(["return_trains"] + parts[1:])
+        elif command in ("/return_seat", "/ret_seat", "/rseat", "返程座位", "选返程座位", "返程选座"):
+            response = self._handle_return_seat(parts[1:])
         elif command in ("/date", "出发日期"):
             response = self._handle_set(["date"] + parts[1:])
         elif command in ("/book", "订票", "选车"):
@@ -158,13 +168,13 @@ class TelegramCommandHandler:
         if s.get("return_date"):
             ret_trains = getattr(self.engine.task, "return_preferred_trains", None) or []
             ret_trains_str = ", ".join(ret_trains) if ret_trains else "不限 (AUTO 自动匹配)"
-            ret_seat_pref = getattr(self.engine.task, "seat_preference", "AUTO") or "AUTO"
+            ret_seat_pref = getattr(self.engine.task, "return_seat_preference", None) or getattr(self.engine, "selected_return_seat", None) or "未指定 (AUTO 自动匹配)"
             rt_info = f"是 (返程 {s['return_date']}, {s['return_time_window']})"
             ret_date_line = (
                 f"• *返程日期*: `{s['return_date']}`\n"
                 f"• *返程时段*: {s['return_time_window']}\n"
                 f"• *返程车次*: `{ret_trains_str}`\n"
-                f"• *返程座位*: `{ret_seat_pref} (AUTO)`\n"
+                f"• *返程座位*: `{ret_seat_pref}`\n"
             )
 
         passengers_list = []
@@ -174,6 +184,9 @@ class TelegramCommandHandler:
 
         trains_filter = ", ".join(self.engine.task.preferred_trains) if self.engine.task.preferred_trains else "不限 (全时段车次)"
         classes_filter = ", ".join(self.engine.task.preferred_classes) if self.engine.task.preferred_classes else "不限 (全席别)"
+        ins_flag = bool(getattr(self.engine.task, "include_insurance", False))
+        ins_desc = "已开启 (购买)" if ins_flag else "默认不购买 (免除额外保费)"
+        ins_hint = "/insurance no" if ins_flag else "/insurance yes"
 
         return (
             f"🚄 *KTMB 抢票守护状态报告* 🚄\n\n"
@@ -181,15 +194,57 @@ class TelegramCommandHandler:
             f"• *去程路线*: *{s['origin']}* ➡️ *{s['destination']}*\n"
             f"• *出发日期*: `{s['date']}`\n"
             f"• *出发时段*: {s['time_window']}\n"
+            f"• *去程座位偏好*: `{self.engine.task.seat_preference}`\n"
             f"{ret_date_line}"
             f"• *车次偏好*: `{trains_filter}`\n"
             f"• *车型席别*: `{classes_filter}`\n"
             f"• *双程往返*: {rt_info}\n"
             f"• *已轮询周期*: {s['total_cycles']} 次\n"
             f"• *乘车人*: {passengers_str}\n"
+            f"• *行程保险 (Takaful)*: {ins_desc} (发 `{ins_hint}` 可切换)\n"
             f"• *数据存储*: SQLite (脱敏与加密守护已开启)\n\n"
             f"💡 发送 `/set trains any` 可取消车次限定；发送 `/set time 00:00-23:59` 监控全天车次。"
         )
+
+    def _handle_insurance(self, args: list) -> str:
+        current_task = self.engine.task
+        cur_ins = bool(getattr(current_task, "include_insurance", False))
+
+        if not args:
+            status_txt = "🟢 *已开启 (自动加购)*" if cur_ins else "⚪ *未开启 (默认不购买，免除额外保费)*"
+            return (
+                f"🛡️ *【KTMB Takaful 行程保险设置】* 🛡️\n\n"
+                f"• *当前设置*: {status_txt}\n"
+                f"• *官方说明*: KTMB 提供每人每程约 RM 2.50 的 Takaful 旅程保险。\n\n"
+                f"👉 *人工确认/修改保险偏好*:\n"
+                f"• 若**需要**购买保险：回复 `/insurance yes` 或 `/insurance on`\n"
+                f"• 若**不要**购买保险：回复 `/insurance no` 或 `/insurance off`\n\n"
+                f"💡 设定后将持久保存在 SQLite，机器人在下单锁座时会自动为您处理官网保险弹窗！"
+            )
+
+        val = " ".join(args).strip().lower()
+        if val in ("yes", "y", "on", "true", "1", "要", "购买", "开启", "买"):
+            new_task = dataclasses.replace(current_task, include_insurance=True)
+            self.engine.update_task(new_task)
+            return (
+                "✅ *已设置：购买 Takaful 行程保险 (YES)*！\n"
+                "• 下单时将自动为您勾选官方旅程保险（每人每程约 RM 2.50）。\n"
+                "• 如需改为不买，随时发送 `/insurance no`。"
+            )
+        elif val in ("no", "n", "off", "false", "0", "不要", "不买", "关闭", "免除", "取消"):
+            new_task = dataclasses.replace(current_task, include_insurance=False)
+            self.engine.update_task(new_task)
+            return (
+                "✅ *已设置：不购买 Takaful 行程保险 (NO)*！\n"
+                "• 下单时将自动为您跳过保险弹窗并免除额外保费。\n"
+                "• 如需开启购买，随时发送 `/insurance yes`。"
+            )
+        else:
+            return (
+                f"⚠️ 无法识别的保险设置参数 `{val}`。\n"
+                f"• 购买保险请回复：`/insurance yes`\n"
+                f"• 不买保险请回复：`/insurance no`"
+            )
 
     def _handle_pause(self) -> str:
         self.engine.is_paused = True
@@ -355,8 +410,19 @@ class TelegramCommandHandler:
                 self.engine.update_task(new_task)
                 return msg
 
+            elif field in ("insurance", "takaful", "ins", "保险", "行程保险"):
+                return self._handle_insurance(args[1:])
+
+            elif field in ("return_seat", "return_seats", "ret_seat", "返程座位", "返程座号"):
+                return self._handle_return_seat(args[1:])
+
+            elif field in ("seat", "seats_preference", "seat_pref", "座位偏好", "去程座位"):
+                new_task = dataclasses.replace(current_task, seat_preference=value.strip())
+                self.engine.update_task(new_task)
+                return f"✓ 去程座位偏好已更新为: *{value.strip()}*"
+
             else:
-                return f"⚠️ 未知设置项 '{field}'。支持的字段：origin, dest, date, time, return_date, seats, trains, class。"
+                return f"⚠️ 未知设置项 '{field}'。支持的字段：origin, dest, date, time, return_date, seats, trains, class, insurance, return_seat。"
         except Exception as e:
             return f"❌ 设置失败: {e}"
 
@@ -491,7 +557,10 @@ class TelegramCommandHandler:
             "• `/set date <YYYY-MM-DD>` - 修改出发日期 (如 `/set date 2027-02-05`)\n"
             "• `/set time <起始>-<截止>` - 修改时段 (如 `/set time 08:00-14:00`)\n"
             "• `/set return_date <日期>` - 设置返程日期激活往返 (如 `/set return_date 2027-02-08`)\n"
-            "• `/return_time [序号/时间点/时段]` - 查看或选择返程日期时间点 (如 `/return_time`、`/ret_time 1` 或 `/return_time 07:11`)\n\n"
+            "• `/return_time [序号/时间点/时段]` - 查看或选择返程日期时间点 (如 `/return_time`、`/ret_time 1` 或 `/return_time 07:11`)\n"
+            "• `/ret_seat <座位号>` - 单独选择返程座位 (如 `/ret_seat 5A` 或 `/ret_seat auto`)\n"
+            "• `/seat <去程> / <返程>` - 一步指定双程座位 (如 `/seat 3A / 5A` 或 `/seat auto`)\n"
+            "• `/insurance [yes/no]` - 开启或关闭 Takaful 旅程保险 (默认不买，免除额外保费)\n\n"
             "⏸️ *运行控制*:\n"
             "• `/pause` - 暂停监听 (节省服务器请求与流量)\n"
             "• `/resume` - 恢复监听\n"
@@ -560,7 +629,11 @@ class TelegramCommandHandler:
             return header + self._format_return_time_choices(ret_trips, ret_date)
 
         value = " ".join(args).strip()
-        val_lower = value.lower()
+        # Clean up any trailing backslashes, slashes, or quotes (e.g. from /book 1 1 \)
+        clean_val = re.sub(r"[\\/\"']+$", "", value).strip()
+        if not clean_val:
+            clean_val = value.strip()
+        val_lower = clean_val.lower()
 
         # 1. Reset / clear return time filter
         if val_lower in ("any", "all", "none", "clear", "auto", "所有", "不限", "全天", "0"):
@@ -575,8 +648,8 @@ class TelegramCommandHandler:
             return "✓ 返程时段与车次已重置为: *00:00 - 23:59 (AUTO 自动匹配)*"
 
         # 2. Time window range (e.g. 08:00-18:00)
-        if "-" in value:
-            times = value.replace(" ", "").split("-")
+        if "-" in clean_val:
+            times = clean_val.replace(" ", "").split("-")
             t_from, t_to = times[0].strip(), times[1].strip()
             new_task = dataclasses.replace(
                 current_task,
@@ -588,7 +661,7 @@ class TelegramCommandHandler:
             return f"✓ 返程时段已更新为: *{t_from} - {t_to}*"
 
         # 3. Select by option index (e.g. /ret_time 1 or /ret_time R1)
-        idx_match = re.match(r"^[rR]?(\d+)$", value)
+        idx_match = re.match(r"^[rR]?(\d+)$", clean_val)
         ret_trips = self._ensure_return_trips(ignore_time_filter=True)
         if idx_match and len( idx_match.group(1) ) <= 2:
             idx = int(idx_match.group(1))
@@ -620,7 +693,7 @@ class TelegramCommandHandler:
         for rt in ret_trips:
             t_no = str(getattr(rt, "train_no", rt.get("train_no") if isinstance(rt, dict) else "")).strip()
             dep = str(getattr(rt, "departure_time", rt.get("departure_time") if isinstance(rt, dict) else "")).strip()
-            if value == dep or value.upper() == t_no.upper():
+            if clean_val == dep or clean_val.upper() == t_no.upper():
                 matched_trip = rt
                 break
 
@@ -644,8 +717,8 @@ class TelegramCommandHandler:
             )
 
         # 5. Direct HH:MM time point when return trips aren't cached yet
-        if re.match(r"^\d{1,2}:\d{2}$", value):
-            parts_hm = value.split(":")
+        if re.match(r"^\d{1,2}:\d{2}$", clean_val):
+            parts_hm = clean_val.split(":")
             norm_hm = f"{int(parts_hm[0]):02d}:{parts_hm[1]}"
             new_task = dataclasses.replace(
                 current_task,
@@ -655,9 +728,81 @@ class TelegramCommandHandler:
             self.engine.update_task(new_task)
             return f"✓ 返程时间点已选定为: *{norm_hm}* (返程时段: `{norm_hm} - {norm_hm}`)"
 
-        new_task = dataclasses.replace(current_task, return_time_from=value)
+        # Fallback only if clean_val matches HH:MM format
+        if re.match(r"^\d{1,2}:\d{2}$", clean_val):
+            new_task = dataclasses.replace(current_task, return_time_from=clean_val)
+            self.engine.update_task(new_task)
+            return f"✓ 返程最早出发时间已更新为: *{clean_val}*"
+        return f"⚠️ 无法识别的返程时间设置: `{clean_val}`。请发送如 `/ret_time 1` 或 `/return_time 07:11`。"
+
+    def _handle_return_seat(self, args: list) -> str:
+        current_task = self.engine.task
+        ret_date = getattr(current_task, "return_date", None)
+        if not ret_date:
+            return (
+                "⚠️ 当前尚未设置返程日期（单程模式）。\n"
+                "请先发送 `/return <YYYY-MM-DD>`（例如 `/return 2026-10-27`）开启往返模式，即可选择返程座位！"
+            )
+
+        if not args:
+            cur_seat = getattr(current_task, "return_seat_preference", None) or getattr(self.engine, "selected_return_seat", None) or "AUTO (自动分配同行位)"
+            ret_coaches = getattr(self.engine, "available_return_seats_cache", None)
+            sel_ret_trip = getattr(self.engine, "selected_return_trip", None)
+            ret_t_no = getattr(sel_ret_trip, "train_no", sel_ret_trip.get("train_no") if isinstance(sel_ret_trip, dict) else None) if sel_ret_trip else None
+            if not ret_t_no and getattr(current_task, "return_preferred_trains", None):
+                ret_t_no = current_task.return_preferred_trains[0]
+            ret_trips = self._ensure_return_trips(ignore_time_filter=True)
+            if not ret_t_no and ret_trips:
+                ret_t_no = getattr(ret_trips[0], "train_no", ret_trips[0].get("train_no") if isinstance(ret_trips[0], dict) else None)
+
+            if not ret_coaches and ret_t_no and hasattr(self.engine, "fetch_return_seats_layout"):
+                try:
+                    ret_coaches = self.engine.fetch_return_seats_layout(ret_t_no)
+                    self.engine.available_return_seats_cache = ret_coaches
+                except Exception as e:
+                    logger.warning(f"Fetch return seats layout error: {e}")
+
+            coach_summary = ""
+            if ret_coaches and isinstance(ret_coaches, dict):
+                lines = ["\n🛬 *【返程车次可选车厢与座位】*:"]
+                for c_name, c_seats in list(ret_coaches.items())[:3]:
+                    if isinstance(c_seats, dict):
+                        win = ", ".join(c_seats.get("window", [])[:8]) or "暂无"
+                        ais = ", ".join(c_seats.get("aisle", [])[:8]) or "暂无"
+                    else:
+                        win = ", ".join(str(s) for s in c_seats[:8]) or "暂无"
+                        ais = "暂无"
+                    lines.append(f"  • *Coach {c_name}*: 靠窗 `{win}` | 走道 `{ais}`")
+                coach_summary = "\n".join(lines) + "\n"
+
+            return (
+                f"💺 *【返程座位选择】* 💺\n\n"
+                f"• *返程日期*: `{ret_date}`\n"
+                f"• *返程车次*: `{ret_t_no or 'AUTO 自动匹配'}`\n"
+                f"• *当前返程座位设定*: *{cur_seat}*\n"
+                f"{coach_summary}\n"
+                f"👉 *如何设置返程座位*:\n"
+                f"• 回复 `/ret_seat <座位号>` (例如: `/ret_seat 5A` 或 `/ret_seat Coach B - 05A`)\n"
+                f"• 回复 `/ret_seat auto` (由系统自动优先安排同行相邻座位)\n"
+                f"• 回复 `/ret_seat window` (指定靠窗) 或 `/ret_seat aisle` (指定走道)\n"
+                f"• 也可在选座时一步合并指定双程座位：回复 `/seat 3A / 5A`"
+            )
+
+        seat_val = " ".join(args).strip().upper()
+        if seat_val in ("AUTO", "DEFAULT", "ANY", "自动", "不限"):
+            self.engine.selected_return_seat = "AUTO"
+            new_task = dataclasses.replace(current_task, return_seat_preference=None)
+            self.engine.update_task(new_task)
+            return "✓ 返程座位已重置为: *AUTO (系统自动优选同行位)*"
+
+        self.engine.selected_return_seat = seat_val
+        new_task = dataclasses.replace(current_task, return_seat_preference=seat_val)
         self.engine.update_task(new_task)
-        return f"✓ 返程最早出发时间已更新为: *{value}*"
+        return (
+            f"✅ *返程座位已选定*: *{seat_val}*！\n\n"
+            f"• 返程座位偏好已保存至 SQLite。\n"
+            f"💡 下一步：回复 `/seat <去程座位>`（例如 `/seat 3A` 或直接回复 `/seat auto`），系统将同时使用去程座位与已选返程座位（*{seat_val}*）锁定双程车票！"
+        )
 
     def _handle_book(self, args: list) -> str:
         if not args:
@@ -702,7 +847,24 @@ class TelegramCommandHandler:
         ret_tt = getattr(self.engine.task, "return_time_to", "23:59") or "23:59"
         ret_win = f"{ret_tf} - {ret_tt}"
 
+        # Fetch return seat layout if return train is selected or cached
+        ret_coaches = None
+        if ret_date:
+            ret_t_no = getattr(sel_ret_trip, "train_no", sel_ret_trip.get("train_no") if isinstance(sel_ret_trip, dict) else None) if sel_ret_trip else None
+            if not ret_t_no and getattr(self.engine.task, "return_preferred_trains", None):
+                ret_t_no = self.engine.task.return_preferred_trains[0]
+            if not ret_t_no and ret_trips:
+                ret_t_no = getattr(ret_trips[0], "train_no", ret_trips[0].get("train_no") if isinstance(ret_trips[0], dict) else None)
+            if ret_t_no and hasattr(self.engine, "fetch_return_seats_layout"):
+                try:
+                    ret_coaches = self.engine.fetch_return_seats_layout(ret_t_no)
+                    self.engine.available_return_seats_cache = ret_coaches
+                except Exception as e:
+                    logger.warning(f"Fetch return seats layout error: {e}")
+
         if hasattr(self.engine, "notifier") and self.engine.notifier:
+            inc_ins = bool(getattr(self.engine.task, "include_insurance", False))
+            cur_ret_seat = getattr(self.engine, "selected_return_seat", None) or getattr(self.engine.task, "return_seat_preference", None)
             try:
                 return self.engine.notifier.format_seat_options_message(
                     train_no=train_no,
@@ -713,6 +875,9 @@ class TelegramCommandHandler:
                     return_trips=ret_trips,
                     selected_return_trip=sel_ret_trip,
                     return_time_window=ret_win,
+                    include_insurance=inc_ins,
+                    return_coaches=ret_coaches,
+                    selected_return_seat=cur_ret_seat,
                 )
             except TypeError:
                 return self.engine.notifier.format_seat_options_message(
@@ -816,13 +981,44 @@ class TelegramCommandHandler:
                 "添加完成后，再次回复 `/seat 3A` 或 `/seat auto` 即可立即锁定生成订单！"
             )
 
-        seat_choice = " ".join([a.strip().upper() for a in args]) if args else "AUTO"
+        seat_raw = " ".join([a.strip().upper() for a in args]) if args else "AUTO"
+        outbound_seat_choice = seat_raw
+        return_seat_choice = getattr(self.engine, "selected_return_seat", None) or getattr(self.engine.task, "return_seat_preference", None) or "AUTO"
+
+        # Check for combo delimiters like "/", "RET", "RETURN", "返程"
+        if "/" in seat_raw:
+            parts = [p.strip() for p in seat_raw.split("/", 1)]
+            outbound_seat_choice = parts[0] or "AUTO"
+            return_seat_choice = parts[1] or "AUTO"
+        elif " RET " in seat_raw:
+            parts = [p.strip() for p in seat_raw.split(" RET ", 1)]
+            outbound_seat_choice = parts[0] or "AUTO"
+            return_seat_choice = parts[1] or "AUTO"
+        elif " RETURN " in seat_raw:
+            parts = [p.strip() for p in seat_raw.split(" RETURN ", 1)]
+            outbound_seat_choice = parts[0] or "AUTO"
+            return_seat_choice = parts[1] or "AUTO"
+        elif " 返程 " in seat_raw or " 返程:" in seat_raw:
+            parts = [p.strip() for p in re.split(r" 返程:? ", seat_raw, maxsplit=1)]
+            outbound_seat_choice = parts[0] or "AUTO"
+            return_seat_choice = parts[1] or "AUTO"
+        elif len(args) == 2 and getattr(self.engine.task, "return_date", None) and len(self.engine.task.passengers or []) <= 1:
+            outbound_seat_choice = args[0].strip().upper()
+            return_seat_choice = args[1].strip().upper()
+
+        if return_seat_choice and return_seat_choice != "AUTO":
+            self.engine.selected_return_seat = return_seat_choice
+
         trip = self.engine.selected_trip
         passengers = list(self.engine.task.passengers or [])
         pax_count = max(1, len(passengers))
 
         try:
-            res = self.engine.execute_real_booking(trip=trip, seat_no=seat_choice)
+            res = self.engine.execute_real_booking(
+                trip=trip,
+                seat_no=outbound_seat_choice,
+                return_seat_no=return_seat_choice,
+            )
             t_no = getattr(trip, "train_no", trip.get("train_no") if isinstance(trip, dict) else "ETS")
             t_cls = getattr(trip, "train_class", trip.get("train_class") if isinstance(trip, dict) else "ETS Gold")
             dep_time = getattr(trip, "departure_time", trip.get("departure_time") if isinstance(trip, dict) else "")
@@ -831,21 +1027,21 @@ class TelegramCommandHandler:
             actual_seat = str(res.get("selected_seat") or "").strip()
             ret_date = getattr(self.engine.task, "return_date", None) or (trip.get("return_date") if isinstance(trip, dict) else getattr(trip, "return_date", None))
             is_rt = bool(ret_date)
-            if not actual_seat and seat_choice.upper() in ("AUTO", "WINDOW", "AISLE", "ANY", "DEFAULT"):
+            if not actual_seat and outbound_seat_choice.upper() in ("AUTO", "WINDOW", "AISLE", "ANY", "DEFAULT"):
                 actual_seat = self._auto_select_seats_from_layout(
                     getattr(self.engine, "available_seats_cache", None),
                     target_count=pax_count,
-                    pref=seat_choice.upper(),
+                    pref=outbound_seat_choice.upper(),
                 )
                 if actual_seat and is_rt and "返程" not in actual_seat:
                     actual_seat = f"{actual_seat} (返程: {actual_seat})"
             if actual_seat:
-                if seat_choice.upper() in ("AUTO", "WINDOW", "AISLE", "ANY", "DEFAULT") and actual_seat.upper() != seat_choice.upper():
-                    seat_display = f"{actual_seat} ({seat_choice})"
+                if outbound_seat_choice.upper() in ("AUTO", "WINDOW", "AISLE", "ANY", "DEFAULT") and actual_seat.upper() != outbound_seat_choice.upper():
+                    seat_display = f"{actual_seat} ({outbound_seat_choice})"
                 else:
                     seat_display = actual_seat
             else:
-                seat_display = seat_choice
+                seat_display = outbound_seat_choice
             pay_url = res.get("payment_url", "")
             upcoming_url = "https://online.ktmb.com.my/Booking/UpcomingList"
             qr_path = res.get("payment_qr")
@@ -917,12 +1113,12 @@ class TelegramCommandHandler:
                     if m_ret_seat:
                         ret_seat = m_ret_seat.group(1).strip()
                 if ret_seat:
-                    if seat_choice.upper() in ("AUTO", "WINDOW", "AISLE", "ANY", "DEFAULT") and "AUTO" not in ret_seat.upper():
-                        ret_seat_display = f"{ret_seat} ({seat_choice})"
+                    if return_seat_choice.upper() in ("AUTO", "WINDOW", "AISLE", "ANY", "DEFAULT") and "AUTO" not in ret_seat.upper():
+                        ret_seat_display = f"{ret_seat} ({return_seat_choice})"
                     else:
                         ret_seat_display = ret_seat
                 else:
-                    ret_seat_display = f"未选择 ({seat_choice})"
+                    ret_seat_display = f"未选择 ({return_seat_choice})"
 
                 ret_date_line = (
                     f"• *返程日期*: `{ret_date}` (往返双程)\n"
@@ -976,6 +1172,13 @@ class TelegramCommandHandler:
                     }
                 )
 
+            ins_bought = bool(getattr(self.engine.task, "include_insurance", False))
+            ins_line = (
+                "• *行程保险*: `已加购 Takaful 保险`\n"
+                if ins_bought
+                else "• *行程保险*: `不购买 (已自动为您免除额外保费)`\n"
+            )
+
             return (
                 f"🎉 *【KTMB 官方席位锁定成功！】* 🎉\n\n"
                 f"{booking_id_line}"
@@ -986,6 +1189,7 @@ class TelegramCommandHandler:
                 f"• *发车时间*: `{dep_time}`\n"
                 f"{ret_date_line}"
                 f"• *乘车人*: {p_name}\n"
+                f"{ins_line}"
                 f"• *二维码有效期*: *3 分钟 (180 秒)*（锁座保留 15 分钟，超时自动释放）\n\n"
                 f"🛡️ *【防扣款不出票 · 金融安全守则】*:\n"
                 f"1. **限时扫码**：Fiuu 银行 DuitNow 二维码有效期仅 **3 分钟**，请务必在收到图片后 **2 分钟内** 扫码付款。\n"

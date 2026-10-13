@@ -432,10 +432,11 @@ class KTMBrowserDriver:
         except Exception:
             return False
 
-    def fetch_seats_layout(self, train_no: str, task: Optional[Any] = None) -> Dict[str, Dict[str, List[str]]]:
+    def fetch_seats_layout(self, train_no: str, task: Optional[Any] = None, leg: str = "DEPART") -> Dict[str, Dict[str, List[str]]]:
         """
         Navigates to /Trip if not already present, clicks the Pick Seats button for train_no,
         and extracts available seats grouped by coach and type (window vs aisle).
+        Supports both outbound (DEPART) and return (RETURN) trips.
         """
         self.dismiss_modals()
         try:
@@ -469,8 +470,9 @@ class KTMBrowserDriver:
                 self.fill_search_criteria(task)
                 self.trigger_search()
 
+            tbody_cls = "tbody.return-trips" if leg.upper() == "RETURN" else "tbody.depart-trips"
             try:
-                self.page.wait_for_selector(f"tbody.depart-trips tr:has-text('{train_no}') .btn-seat-layout, tbody.depart-trips tr .btn-seat-layout", state="visible", timeout=15000)
+                self.page.wait_for_selector(f"{tbody_cls} tr:has-text('{train_no}') .btn-seat-layout, {tbody_cls} tr .btn-seat-layout", state="visible", timeout=15000)
             except Exception:
                 pass
 
@@ -487,9 +489,9 @@ class KTMBrowserDriver:
                 except Exception:
                     pass
 
-            row = self.page.locator(f"tbody.depart-trips tr:has-text('{train_no}')").first
+            row = self.page.locator(f"{tbody_cls} tr:has-text('{train_no}')").first
             if row.count() == 0:
-                row = self.page.locator("tbody.depart-trips tr").first
+                row = self.page.locator(f"{tbody_cls} tr").first
 
             btn = row.locator(".btn-seat-layout, button:has-text('Pick Seats'), a:has-text('Pick Seats'), a:has-text('Select')").first
             if btn.count() > 0:
@@ -500,9 +502,9 @@ class KTMBrowserDriver:
                     btn.click(timeout=5000)
             else:
                 try:
-                    self.page.locator(f".btn-seat-layout[data-tripdata*='{train_no}']").first.click(timeout=5000, force=True)
+                    self.page.locator(f"{tbody_cls} .btn-seat-layout[data-tripdata*='{train_no}']").first.click(timeout=5000, force=True)
                 except Exception:
-                    self.page.locator(f".btn-seat-layout[data-tripdata*='{train_no}']").first.click(timeout=5000)
+                    self.page.locator(f"{tbody_cls} .btn-seat-layout").first.click(timeout=5000)
 
             self.page.wait_for_selector("#seatSelect", state="visible", timeout=12000)
             time.sleep(1.0)
@@ -812,23 +814,66 @@ class KTMBrowserDriver:
                 except Exception:
                     pass
 
-                btn = self.page.locator(f"tbody.depart-trips tr:has-text('{train_no}') .btn-seat-layout, tbody.depart-trips tr .btn-seat-layout").first
-                if btn.count() > 0:
-                    try:
+                # Ensure modal state is clean before opening
+                try:
+                    self.page.evaluate("""() => {
+                        const m = document.querySelector('#seatSelect');
+                        if (m && m.classList.contains('show')) {
+                            const closeBtn = m.querySelector('.close, [data-dismiss="modal"]');
+                            if (closeBtn) closeBtn.click();
+                        }
+                        document.querySelectorAll('.modal-backdrop').forEach(b => b.remove());
+                    }""")
+                    time.sleep(0.5)
+                except Exception:
+                    pass
+
+                # Locate row and button with robust fallbacks
+                btn_clicked = False
+                try:
+                    btn = self.page.locator(f"tbody.depart-trips tr:has-text('{train_no}') .btn-seat-layout, tbody.depart-trips tr:has-text('{train_no}') button:has-text('Pick Seats')").first
+                    if btn.count() == 0:
+                        btn = self.page.locator("tbody.depart-trips tr .btn-seat-layout, tbody.depart-trips tr button:has-text('Pick Seats')").first
+                    if btn.count() > 0:
                         btn.scroll_into_view_if_needed(timeout=2000)
+                        btn.click(timeout=5000, force=True)
+                        btn_clicked = True
+                except Exception as ex:
+                    logger.warning(f"常规点击去程选座按钮失败，尝试 JS 原生触发: {ex}")
+
+                if not btn_clicked:
+                    try:
+                        self.page.evaluate(f"""(tNo) => {{
+                            const rows = Array.from(document.querySelectorAll('tbody.depart-trips tr'));
+                            let target = rows.find(r => r.innerText.includes(tNo)) || rows[0];
+                            if (target) {{
+                                const b = target.querySelector('.btn-seat-layout') || target.querySelector('button');
+                                if (b) b.click();
+                            }}
+                        }}""", train_no or "")
                     except Exception:
                         pass
-                    btn.click(timeout=5000, force=True)
-                else:
-                    self.fetch_seats_layout(train_no or "", task=task)
 
                 try:
                     self.page.wait_for_selector("#seatSelect", state="visible", timeout=12000)
                 except Exception:
-                    m_text = self.check_maintenance_modal()
-                    if m_text:
-                        raise RuntimeError(f"KTMB 官方系统维护中（每晚 23:00 - 00:15 例行维护，暂停订票与支付）：{m_text}")
-                    raise
+                    # Retry once via JS trigger if first click was missed or backdrop intercepted
+                    try:
+                        self.page.evaluate(f"""(tNo) => {{
+                            document.querySelectorAll('.modal-backdrop').forEach(b => b.remove());
+                            const rows = Array.from(document.querySelectorAll('tbody.depart-trips tr'));
+                            let target = rows.find(r => r.innerText.includes(tNo)) || rows[0];
+                            if (target) {{
+                                const b = target.querySelector('.btn-seat-layout') || target.querySelector('button');
+                                if (b) b.click();
+                            }}
+                        }}""", train_no or "")
+                        self.page.wait_for_selector("#seatSelect", state="visible", timeout=8000)
+                    except Exception:
+                        m_text = self.check_maintenance_modal()
+                        if m_text:
+                            raise RuntimeError(f"KTMB 官方系统维护中（每晚 23:00 - 00:15 例行维护，暂停订票与支付）：{m_text}")
+                        raise
                 time.sleep(1.0)
 
             # 4. Smart Seat Selection via DOM click (supports multiple passengers/seats)
@@ -1179,7 +1224,7 @@ class KTMBrowserDriver:
             logger.warning(f"锁座流程推进失败: {e}")
             raise RuntimeError(f"{e}")
 
-    def fill_and_submit_passenger_form(self, passengers: list) -> Dict[str, Any]:
+    def fill_and_submit_passenger_form(self, passengers: list, task: Optional[Any] = None) -> Dict[str, Any]:
         """
         Fills passenger information on official KITS /Book page, handles Takaful insurance
         and meal prompts, and reaches the official Order / Payment options page.
@@ -1246,9 +1291,28 @@ class KTMBrowserDriver:
                     pass
 
             # Step 2: Handle Takaful Insurance page
+            include_insurance = bool(getattr(task, "include_insurance", False)) if task else False
+            if include_insurance:
+                logger.info("🛡️ 用户已开启 Takaful 行程保险，正在勾选保险选项...")
+                try:
+                    self.page.evaluate("""
+                        () => {
+                            const boxes = document.querySelectorAll(
+                                "input[type='checkbox'][id*='Insurance'], input[type='checkbox'][name*='Insurance'], " +
+                                "input[type='checkbox'][id*='Takaful'], input[type='checkbox'][name*='Takaful']"
+                            );
+                            boxes.forEach(cb => {
+                                if (!cb.checked) cb.click();
+                            });
+                        }
+                    """)
+                    time.sleep(0.5)
+                except Exception:
+                    pass
+
             takaful_proceed = self.page.locator("#btnUpdateInsuranceYes, button:has-text('PROCEED TO PAYMENT')").last
             if takaful_proceed.count() > 0 and takaful_proceed.is_visible():
-                logger.info("🛡️ 正在处理 Takaful 保险确认...")
+                logger.info(f"🛡️ 正在处理 Takaful 保险确认 (购买保险={include_insurance})...")
                 try:
                     takaful_proceed.click(timeout=5000)
                 except Exception:
