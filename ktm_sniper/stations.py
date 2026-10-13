@@ -1,5 +1,7 @@
 from typing import Dict, List, Tuple, Optional
 
+MAX_POPULAR_STATIONS_LIMIT = 10
+
 class KTMStationRegistry:
     """
     Registry mapping Malaysian railway station names and codes
