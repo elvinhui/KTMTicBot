@@ -738,7 +738,47 @@ class KTMBrowserDriver:
                 self.fill_search_criteria(task)
                 self.trigger_search()
 
-            # 2. Dismiss any modal/cookie popups
+            # 2. Ensure the seat selection modal is actually opened before waiting for it.
+            #    The #seatSelect element exists in the DOM but stays hidden until a
+            #    seat-selection trigger is clicked, so waiting for visibility alone times out.
+            try:
+                if not self.page.locator("#seatSelect").is_visible():
+                    opened = self.page.evaluate("""
+                        () => {
+                            const modal = document.querySelector('#seatSelect');
+                            if (!modal) return false;
+                            // Try common triggers that open the seat modal
+                            const triggers = Array.from(document.querySelectorAll(
+                                '[data-target="#seatSelect"], [data-bs-target="#seatSelect"], '
+                                + 'a[href="#seatSelect"], button.select-seat, .btn-select-seat, '
+                                + '[onclick*="seatSelect"], [data-toggle="modal"][data-target*="seat"]'
+                            )).filter(el => el.offsetParent !== null && !el.disabled);
+                            if (triggers.length) {
+                                triggers[0].scrollIntoView({block: 'center'});
+                                triggers[0].click();
+                                return true;
+                            }
+                            // Fallback: force-show the modal via Bootstrap/jQuery if available
+                            if (window.jQuery && window.jQuery.fn && window.jQuery.fn.modal) {
+                                window.jQuery('#seatSelect').modal('show');
+                                return true;
+                            }
+                            if (window.bootstrap && window.bootstrap.Modal) {
+                                window.bootstrap.Modal.getOrCreateInstance(modal).show();
+                                return true;
+                            }
+                            return false;
+                        }
+                    """)
+                    if opened:
+                        try:
+                            self.page.wait_for_selector("#seatSelect", state="visible", timeout=8000)
+                        except Exception:
+                            pass
+            except Exception as e:
+                logger.warning(f"尝试打开选座弹窗失败: {e}")
+
+            # 3. Dismiss any modal/cookie popups
             self.dismiss_modals()
 
             # 3. Open #seatSelect modal (and ensure cart slots match target_count)
