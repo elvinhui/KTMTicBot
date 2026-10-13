@@ -277,4 +277,228 @@ def test_command_handler_seat_with_qr_and_autologout(sample_engine, tmp_path):
     mock_auth.logout.assert_called_once_with(mock_driver.page)
 
 
+def test_command_handler_seat_auto_shows_actual_selected_seat(sample_engine, tmp_path):
+    handler = TelegramCommandHandler(engine=sample_engine, authorized_chat_id="1682009086")
+    qr_file = tmp_path / "test_auto_qr.png"
+    qr_file.write_text("fake qr image")
+
+    sample_engine.notifier = MagicMock()
+    sample_engine.selected_trip = {"train_no": "9326", "train_class": "Platinum", "departure_time": "09:55"}
+    sample_engine.execute_real_booking = MagicMock(return_value={
+        "status": "SUCCESS",
+        "booking_id": "KITS-1791641423",
+        "selected_seat": "Coach A - 6B",
+        "payment_url": "https://online.ktmb.com.my/Booking/UpcomingList",
+        "payment_qr": str(qr_file)
+    })
+
+    res = handler.handle_message(chat_id="1682009086", text="/seat auto")
+    assert "Coach A - 6B (AUTO)" in res
+    sample_engine.notifier.send_photo_alert.assert_called_once()
+    qr_caption = sample_engine.notifier.send_photo_alert.call_args.kwargs.get("caption", "")
+    assert "Coach A - 6B (AUTO)" in qr_caption
+
+
+def test_command_handler_seat_auto_multi_passengers_selects_by_count(sample_engine, tmp_path):
+    handler = TelegramCommandHandler(engine=sample_engine, authorized_chat_id="1682009086")
+    qr_file = tmp_path / "test_multi_auto_qr.png"
+    qr_file.write_text("fake qr image")
+
+    # Configure 3 passengers
+    handler.handle_message(chat_id="1682009086", text="/clear_passengers")
+    handler.handle_message(chat_id="1682009086", text="/add_passenger TAN JIA HUI 960217075045 MALE")
+    handler.handle_message(chat_id="1682009086", text="/add_passenger TAN AH GOH 670328085437 MALE")
+    handler.handle_message(chat_id="1682009086", text="/add_passenger TAN SIEW CHENG 651219085618 FEMALE")
+    assert len(sample_engine.task.passengers) == 3
+    assert sample_engine.task.required_seats == 3
+
+    sample_engine.notifier = MagicMock()
+    sample_engine.selected_trip = {"train_no": "9326", "train_class": "Platinum", "departure_time": "09:55"}
+    sample_engine.available_seats_cache = {
+        "B": {
+            "window": ["03A", "03D", "04A", "04D"],
+            "aisle": ["03B", "03C", "04B", "04C"]
+        }
+    }
+    sample_engine.execute_real_booking = MagicMock(return_value={
+        "status": "SUCCESS",
+        "booking_id": "KITS-1791649999",
+        "payment_url": "https://online.ktmb.com.my/Booking/UpcomingList",
+        "payment_qr": str(qr_file)
+    })
+
+    res = handler.handle_message(chat_id="1682009086", text="/seat auto")
+    # Should automatically pick 3 adjacent seats in Row 03 of Coach B for the 3 passengers
+    assert "Coach B - 03A, Coach B - 03B, Coach B - 03C (AUTO)" in res
+    assert "TAN JIA HUI, TAN AH GOH, TAN SIEW CHENG (共 3 人)" in res
+    sample_engine.notifier.send_photo_alert.assert_called_once()
+    qr_caption = sample_engine.notifier.send_photo_alert.call_args.kwargs.get("caption", "")
+    assert "Coach B - 03A, Coach B - 03B, Coach B - 03C (AUTO)" in qr_caption
+    assert "TAN JIA HUI, TAN AH GOH, TAN SIEW CHENG (共 3 人)" in qr_caption
+
+
+def test_command_handler_seat_with_return_date(sample_engine, tmp_path):
+    handler = TelegramCommandHandler(engine=sample_engine, authorized_chat_id="1682009086")
+    qr_file = tmp_path / "test_round_trip_qr.png"
+    qr_file.write_text("fake qr image")
+
+    # Configure return_date via /return (must be >= sample_engine.task.date 2027-02-04)
+    ret_reply = handler.handle_message(chat_id="1682009086", text="/return 2027-02-08")
+    assert "出发日期: *2027-02-04*" in ret_reply
+    assert "返程日期: *2027-02-08*" in ret_reply
+    assert "返程时段:" in ret_reply
+    assert "返程车次:" in ret_reply
+    assert "返程座位:" in ret_reply
+    assert sample_engine.task.is_round_trip is True
+    assert sample_engine.task.return_date == "2027-02-08"
+
+    status_reply = handler.handle_message(chat_id="1682009086", text="/status")
+    assert "• *出发日期*: `2027-02-04`" in status_reply
+    assert "• *返程日期*: `2027-02-08`" in status_reply
+    assert "• *返程时段*:" in status_reply
+    assert "• *返程车次*:" in status_reply
+    assert "• *返程座位*:" in status_reply
+
+    sample_engine.notifier = MagicMock()
+    sample_engine.selected_trip = {"train_no": "9124", "train_class": "Platinum", "departure_time": "08:05"}
+    sample_engine.execute_real_booking = MagicMock(return_value={
+        "status": "SUCCESS",
+        "booking_id": "KITS-RT-8888",
+        "selected_seat": "Coach B - 03A (返程: Coach C - 05A)",
+        "return_train_no": "9041",
+        "return_train_class": "Gold",
+        "return_departure_time": "05:00",
+        "return_seat": "Coach C - 05A",
+        "payment_url": "https://online.ktmb.com.my/Booking/UpcomingList",
+        "payment_qr": str(qr_file)
+    })
+
+    res = handler.handle_message(chat_id="1682009086", text="/seat auto")
+    assert "Coach B - 03A (返程: Coach C - 05A) (AUTO)" in res
+    assert "• *出发日期*: `2027-02-04`" in res
+    assert "• *返程日期*: `2027-02-08` (往返双程)" in res
+    assert "• *返程时间*: `05:00` (AUTO)" in res
+    assert "• *返程车次*: *9041* (Gold) (AUTO)" in res
+    assert "• *返程座位*: `Coach C - 05A (AUTO)`" in res
+    sample_engine.notifier.send_photo_alert.assert_called_once()
+    qr_caption = sample_engine.notifier.send_photo_alert.call_args.kwargs.get("caption", "")
+    assert "Coach B - 03A (返程: Coach C - 05A) (AUTO)" in qr_caption
+    assert "• *出发日期*: `2027-02-04`" in qr_caption
+    assert "• *返程日期*: `2027-02-08` (往返双程)" in qr_caption
+    assert "• *返程时间*: `05:00` (AUTO)" in qr_caption
+    assert "• *返程车次*: *9041* (Gold) (AUTO)" in qr_caption
+    assert "• *返程座位*: `Coach C - 05A (AUTO)`" in qr_caption
+    handler._cancel_payment_expiry_timer()
+
+
+def test_command_handler_verify_and_expiry_timer(sample_engine):
+    handler = TelegramCommandHandler(engine=sample_engine, authorized_chat_id="1682009086", expiry_timeout_seconds=0)
+    sample_engine.notifier = MagicMock()
+    sample_engine.logout = MagicMock(return_value=True)
+
+    # 1. PENDING_PAYMENT booking result shows honest status + payment_amount + payment_ref
+    sample_engine.selected_trip = {"train_no": "9326", "train_class": "Platinum", "departure_time": "09:55"}
+    sample_engine.execute_real_booking = MagicMock(return_value={
+        "status": "SUCCESS",
+        "booking_id": "PENDING_PAYMENT",
+        "payment_ref": "FIUU-E10B0A00E041",
+        "payment_amount": "497.00",
+        "selected_seat": "Coach B - 2C, Coach B - 2D",
+        "payment_url": "https://pay.fiuu.com/RMS/intermediate_app/viewqr.php",
+    })
+    res_seat = handler.handle_message(chat_id="1682009086", text="/seat auto")
+    assert "待付款后生成" in res_seat
+    assert "FIUU-E10B0A00E041" in res_seat
+    assert "RM 497.00" in res_seat
+    assert "/verify" in res_seat
+
+    # 2. /verify when UpcomingList has no tickets
+    sample_engine.verify_upcoming_bookings = MagicMock(return_value=[])
+    res_empty = handler.handle_message(chat_id="1682009086", text="/verify")
+    assert "暂未查到已出票记录" in res_empty
+    assert "没有买到票" in res_empty
+
+    # 3. /verify when UpcomingList has confirmed ticket
+    sample_engine.verify_upcoming_bookings = MagicMock(return_value=[
+        {
+            "booking_no": "K261049574760",
+            "route": "JB SENTRAL BUKIT MERTAJAM",
+            "depart_date": "20 Oct 2026",
+            "return_date": "27 Oct 2026",
+            "print_url": "https://online.ktmb.com.my/Booking/PrintTicket?p=K261049574760",
+            "legs": [
+                {
+                    "route": "JB SENTRAL BUKIT MERTAJAM",
+                    "train": "Platinum - 9326",
+                    "datetime": "20 Oct 2026 / 09:55",
+                    "tickets": [
+                        {"seat": "B / 2C", "ticket_no": "T261013679970", "passenger": "TAN JIA HUI 960217075045"}
+                    ],
+                }
+            ],
+        }
+    ])
+    res_paid = handler.handle_message(chat_id="1682009086", text="/verify")
+    assert "已真实付款出票" in res_paid
+    assert "K261049574760" in res_paid
+    assert "T261013679970" in res_paid
+    assert "B / 2C" in res_paid
+
+    # 4. 15-min expiry check when unpaid sends timeout alert
+    sample_engine.verify_upcoming_bookings = MagicMock(return_value=[])
+    handler._on_payment_expiry_check({"train_no": "9326", "dep_date": "2026-10-20", "seat_display": "Coach B - 2C"})
+    sample_engine.notifier.send_raw_message.assert_called_once()
+    expiry_text = sample_engine.notifier.send_raw_message.call_args.args[0]
+    assert "15 分钟锁座超时提醒" in expiry_text
+    assert "自动释放" in expiry_text
+
+
+def test_command_handler_return_time_point_selection(sample_engine):
+    handler = TelegramCommandHandler(engine=sample_engine, authorized_chat_id="1682009086", expiry_timeout_seconds=0)
+    return_trips = [
+        {"train_no": "9323", "train_class": "Platinum", "departure_time": "07:11", "arrival_time": "15:35", "available_seats": 270, "fare": 139.0},
+        {"train_no": "9329", "train_class": "Platinum", "departure_time": "16:10", "arrival_time": "23:55", "available_seats": 120, "fare": 139.0},
+    ]
+    sample_engine.fetch_return_trips = MagicMock(return_value=return_trips)
+
+    # 1. /return <date> displays selectable return time points
+    res_ret = handler.handle_message(chat_id="1682009086", text="/return 2027-02-08")
+    assert "[R1]" in res_ret
+    assert "07:11" in res_ret
+    assert "[R2]" in res_ret
+    assert "16:10" in res_ret
+
+    # 2. /return_time with no args lists available return time points
+    res_list = handler.handle_message(chat_id="1682009086", text="/return_time")
+    assert "返程时间点与车次选择" in res_list
+    assert "07:11" in res_list
+    assert "9323" in res_list
+
+    # 3. /ret_time 2 selects [R2] 16:10 (9329)
+    res_sel = handler.handle_message(chat_id="1682009086", text="/ret_time 2")
+    assert "已选定返程时间点与车次" in res_sel
+    assert "16:10" in res_sel
+    assert "9329" in res_sel
+    assert sample_engine.task.return_time_from == "16:10"
+    assert sample_engine.task.return_time_to == "16:10"
+    assert sample_engine.task.return_preferred_trains == ["9329"]
+
+    # 4. /return_time 07:11 selects exact time point 07:11 (9323)
+    res_exact = handler.handle_message(chat_id="1682009086", text="/return_time 07:11")
+    assert "07:11" in res_exact
+    assert "9323" in res_exact
+    assert sample_engine.task.return_time_from == "07:11"
+    assert sample_engine.task.return_time_to == "07:11"
+    assert sample_engine.task.return_preferred_trains == ["9323"]
+
+    # 5. /return_time any resets back to full-day auto
+    res_any = handler.handle_message(chat_id="1682009086", text="/return_time any")
+    assert "00:00 - 23:59" in res_any
+    assert sample_engine.task.return_time_from == "00:00"
+    assert sample_engine.task.return_time_to == "23:59"
+    assert sample_engine.task.return_preferred_trains == []
+
+
+
+
 

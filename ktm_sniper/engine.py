@@ -62,7 +62,9 @@ class KTMSniperEngine:
         self._main_thread = threading.current_thread()
         self._action_queue: queue.Queue = queue.Queue()
         self.last_found_trips: List[Any] = []
+        self.last_found_return_trips: List[Any] = []
         self.selected_trip: Optional[Any] = None
+        self.selected_return_trip: Optional[Any] = None
         self.available_seats_cache: Dict[str, Any] = {}
         self.require_confirmation: bool = getattr(task, "require_confirmation", False)
 
@@ -139,13 +141,34 @@ class KTMSniperEngine:
         if self.browser_driver and not self.browser_driver.is_logged_in() and self.authenticator:
             logger.info("🔐 正在为官方订座执行认证登录...")
             self.authenticator.ensure_authenticated(self.browser_driver.page)
-        return self.reserver.reserve_seat(
-            trip_id=train_no,
-            seat_preference=seat_no,
-            passengers=self.task.passengers,
-            driver=self.browser_driver,
-            task=self.task
-        )
+
+        def _attempt():
+            return self.reserver.reserve_seat(
+                trip_id=train_no,
+                seat_preference=seat_no,
+                passengers=self.task.passengers,
+                driver=self.browser_driver,
+                task=self.task
+            )
+
+        try:
+            return _attempt()
+        except RuntimeError as e:
+            marker = getattr(self.browser_driver, "SESSION_EXPIRED_MARKER", "KITS_SESSION_EXPIRED")
+            if not (self.browser_driver and self.authenticator and marker in str(e)):
+                raise
+            logger.warning("⚠️ 订座时检测到 KITS 会话失效，正在重新登录并重试一次...")
+            page = self.browser_driver.page
+            try:
+                page.goto(page.url.split("/Trip")[0] if "/Trip" in (page.url or "") else "about:blank")
+            except Exception:
+                pass
+            if not self.authenticator.ensure_authenticated(page, notifier=self.notifier):
+                raise RuntimeError("KITS 重新登录失败，无法完成订座") from e
+            self.browser_driver._last_searched_pax = None
+            self.browser_driver._last_searched_return_date = "__force__"
+            self.browser_driver.navigate_to_booking()
+            return _attempt()
 
     def logout(self) -> bool:
         """
@@ -163,6 +186,70 @@ class KTMSniperEngine:
                 return False
         return False
 
+    def verify_upcoming_bookings(self) -> List[Dict[str, Any]]:
+        """
+        Thread-safely queries KTMB /Booking/UpcomingList for real issued tickets.
+        """
+        if not self.browser_driver:
+            return []
+        return self.run_in_browser_thread(self._verify_upcoming_bookings_sync)
+
+    def _verify_upcoming_bookings_sync(self) -> List[Dict[str, Any]]:
+        if not self.browser_driver:
+            return []
+        page = getattr(self.browser_driver, "page", None)
+        if self.authenticator and page and not self.browser_driver.is_logged_in():
+            logger.info("🔐 正在登录 KITS 以核验【Upcoming Trips】真实出票状态...")
+            self.authenticator.ensure_authenticated(page, notifier=self.notifier)
+        try:
+            return self.browser_driver.scrape_upcoming_bookings()
+        except Exception as e:
+            marker = getattr(self.browser_driver, "SESSION_EXPIRED_MARKER", "KITS_SESSION_EXPIRED")
+            if self.authenticator and page and marker in str(e):
+                try:
+                    page.goto("about:blank")
+                except Exception:
+                    pass
+                if self.authenticator.ensure_authenticated(page, notifier=self.notifier):
+                    return self.browser_driver.scrape_upcoming_bookings()
+            raise
+
+    def fetch_return_trips(self, ignore_time_filter: bool = False) -> List[Any]:
+        """
+        Fetches available return trips for the return leg of a round-trip task.
+        Safe to call from any thread (uses HTTP checker first, falls back to browser DOM).
+        """
+        if not self.task.is_round_trip or not self.task.return_date:
+            return []
+        ret_cfg = SniperTaskConfig(
+            origin=self.task.destination,
+            destination=self.task.origin,
+            date=self.task.return_date,
+            time_from="00:00" if ignore_time_filter else (self.task.return_time_from or "00:00"),
+            time_to="23:59" if ignore_time_filter else (self.task.return_time_to or "23:59"),
+            preferred_trains=[] if ignore_time_filter else list(self.task.return_preferred_trains or []),
+            preferred_classes=list(self.task.return_preferred_classes or self.task.preferred_classes or []),
+            seat_preference=self.task.seat_preference,
+            required_seats=self.task.required_seats,
+            passengers=self.task.passengers,
+            is_round_trip=False,
+            leg_type="RETURN",
+        )
+        ret_trips: List[Any] = []
+        if self.checker:
+            try:
+                ret_trips = self.checker.find_matching_trips(ret_cfg)
+            except Exception as e:
+                logger.warning(f"HTTP return trip query error ({e}), falling back to browser scraping...")
+        if not ret_trips and self.browser_driver:
+            try:
+                scraped = self.run_in_browser_thread(self.browser_driver.scrape_return_trips)
+                ret_trips = [t for t in scraped if ret_cfg.matches_trip(t)]
+            except Exception as e:
+                logger.warning(f"Browser return trip scraping error: {e}")
+        self.last_found_return_trips = ret_trips
+        return ret_trips
+
     def update_task(self, new_task: SniperTaskConfig):
         """
         Thread-safely hot-updates the target sniper task criteria.
@@ -170,10 +257,15 @@ class KTMSniperEngine:
         """
         with self._lock:
             old_desc = f"{self.task.origin} -> {self.task.destination} ({self.task.date})"
+            old_pax = len(self.task.passengers) if self.task.passengers else self.task.required_seats
+            new_pax = len(new_task.passengers) if new_task.passengers else new_task.required_seats
             route_changed = (
                 self.task.origin != new_task.origin or
                 self.task.destination != new_task.destination or
-                self.task.date != new_task.date
+                self.task.date != new_task.date or
+                self.task.return_date != new_task.return_date or
+                self.task.is_round_trip != new_task.is_round_trip or
+                old_pax != new_pax
             )
             self.task = new_task
             self.consecutive_errors = 0
@@ -200,7 +292,7 @@ class KTMSniperEngine:
                 "destination": self.task.destination,
                 "date": self.task.date,
                 "time_window": f"{self.task.time_from} - {self.task.time_to}",
-                "is_round_trip": self.task.is_round_trip,
+                "is_round_trip": bool(self.task.is_round_trip or self.task.return_date),
                 "return_date": self.task.return_date,
                 "return_time_window": f"{self.task.return_time_from} - {self.task.return_time_to}" if self.task.return_date else "N/A",
                 "passengers": [f"{p.name} ({p.masked_id})" for p in self.task.passengers]
@@ -274,13 +366,30 @@ class KTMSniperEngine:
 
         # Interactive Confirmation Mode: send list to Telegram and wait for user reply!
         if self.require_confirmation and self.notifier and len(trips) > 0:
+            return_trips: List[Any] = []
+            if self.task.is_round_trip and self.task.return_date:
+                try:
+                    return_trips = self.fetch_return_trips()
+                except Exception as e:
+                    logger.warning(f"Failed to fetch return trips for confirmation menu: {e}")
             logger.info(f"{leg_label} Found {len(trips)} available trips. Sending trip choices to Telegram...")
-            self.notifier.send_trip_options(
-                trips=trips,
-                origin=self.task.origin,
-                destination=self.task.destination,
-                date=self.task.date
-            )
+            try:
+                self.notifier.send_trip_options(
+                    trips=trips,
+                    origin=self.task.origin,
+                    destination=self.task.destination,
+                    date=self.task.date,
+                    return_date=self.task.return_date,
+                    return_trips=return_trips,
+                )
+            except TypeError:
+                self.notifier.send_trip_options(
+                    trips=trips,
+                    origin=self.task.origin,
+                    destination=self.task.destination,
+                    date=self.task.date,
+                    return_date=self.task.return_date,
+                )
             self.is_paused = True
             if self.repository:
                 self.repository.log_event(
@@ -289,7 +398,8 @@ class KTMSniperEngine:
                 )
             return {
                 "status": "WAITING_CONFIRMATION",
-                "trips": trips
+                "trips": trips,
+                "return_trips": return_trips,
             }
 
         # Select the best matching trip (first available)
@@ -334,13 +444,18 @@ class KTMSniperEngine:
 
         # 5. Notify via Telegram
         if self.notifier:
+            selected_seat = (reservation_result or {}).get("selected_seat") if isinstance(reservation_result, dict) else None
             trip_details = {
                 "train_no": target_trip.train_no,
                 "train_class": target_trip.train_class,
                 "origin": self.task.origin,
                 "destination": self.task.destination,
+                "date": self.task.date,
+                "return_date": self.task.return_date,
                 "departure_time": f"{self.task.date} {target_trip.departure_time}"
             }
+            if selected_seat:
+                trip_details["selected_seat"] = selected_seat
             passenger_name = self.task.passengers[0].name if self.task.passengers else "Passenger"
             raw_id = self.task.passengers[0].id_number if self.task.passengers else "N/A"
             payment_url = (reservation_result or {}).get("payment_url") if isinstance(reservation_result, dict) else None

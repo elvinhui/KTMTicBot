@@ -210,3 +210,39 @@ def test_cli_modes(tmp_path: Path, monkeypatch):
     ])
     assert rc2 == 0
     assert "action=" in gh_out.read_text(encoding="utf-8")
+
+
+def test_real_ec2_runtime_playwright_error_handling(tmp_path: Path):
+    browser_dir = tmp_path / "ktm_sniper" / "browser"
+    browser_dir.mkdir(parents=True)
+    driver_py = browser_dir / "driver.py"
+    driver_py.write_text(
+        "# KTMB Driver\n"
+        "class KTMBrowserDriver:\n"
+        "    def fill_and_submit_passenger_form(self):\n"
+        "        btn_proceed = self.page.locator('button:has-text(\"PROCEED TO PAYMENT\")')\n"
+        "        btn_proceed.click(timeout=5000)\n",
+        encoding="utf-8"
+    )
+
+    real_ec2_log = (
+        "2026-10-13 15:00:35,091 [INFO] ktm_sniper.browser.driver: 🛡️ 正在处理 Takaful 保险确认...\n"
+        "2026-10-13 15:00:38,667 [INFO] ktm_sniper.browser.driver: 🍽️ 正在处理餐食确认并提交订单...\n"
+        "2026-10-13 15:00:43,669 [ERROR] ktm_sniper.browser.driver: ❌ 官方乘车人表单提交异常: Locator.click: Timeout 5000ms exceeded.\n"
+        "Call log:\n"
+        '  - waiting for locator("button:has-text(\'PROCEED TO PAYMENT\')").last\n'
+        '    - locator resolved to <button type="button" id="btnUpdateInsuranceYes">PROCEED TO PAYMENT</button>\n'
+        '  - attempting click action\n'
+        '    2 × waiting for element to be visible\n'
+        '      - <div id="popupModal" class="modal fade show">…</div> intercepts pointer events\n'
+        "2026-10-13 15:00:43,680 [INFO] ktm_sniper.telegram_bot: 📤 正在回复 Telegram: ❌ 预订下单失败\n"
+    )
+
+    snippet = extract_error_snippet(real_ec2_log)
+    assert "intercepts pointer events" in snippet
+    assert "btnUpdateInsuranceYes" in snippet
+
+    files = extract_referenced_files(snippet, str(tmp_path))
+    assert len(files) >= 1
+    assert files[0][0] == "ktm_sniper/browser/driver.py"
+

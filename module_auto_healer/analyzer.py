@@ -18,6 +18,10 @@ FILE_REF_PATTERN = re.compile(
     r'(?:File\s+"|in\s+|python\s+)([a-zA-Z0-9_./\\:-]+\.py)'
 )
 
+LOGGER_MODULE_PATTERN = re.compile(
+    r"\b(ktm_sniper(?:\.[a-zA-Z0-9_]+)+)\b"
+)
+
 GH_LOG_PREFIX_PATTERN = re.compile(
     r"^.*?\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\s?"
 )
@@ -32,7 +36,7 @@ def _strip_gh_prefixes(text: str) -> str:
 def extract_error_snippet(raw_log: str, max_chars: int = 4000) -> str:
     """
     Extracts the most relevant error/traceback window from a GitHub Actions or EC2 Docker log,
-    stripping runner timestamps and cutting off post-failure artifact/cleanup noise.
+    stripping runner timestamps and preserving multi-line Playwright Call logs.
     """
     if not raw_log:
         return ""
@@ -55,14 +59,47 @@ def extract_error_snippet(raw_log: str, max_chars: int = 4000) -> str:
         lines_before = relevant_log.splitlines()[-65:]
         return "\n".join(lines_before)[-max_chars:]
 
-    lines = [
-        line for line in relevant_log.splitlines()
-        if any(k in line.lower() for k in ("error", "exception", "fatal", "failed", "traceback"))
+    all_lines = relevant_log.splitlines()
+    error_indices = [
+        idx for idx, line in enumerate(all_lines)
+        if any(k in line.lower() for k in ("[error]", "error:", "exception", "fatal", "failed"))
     ]
-    if lines:
-        return "\n".join(lines[-40:])[-max_chars:]
+    if error_indices:
+        first_err = error_indices[-1]
+        start_idx = max(0, first_err - 5)
+        end_idx = min(len(all_lines), first_err + 45)
+        return "\n".join(all_lines[start_idx:end_idx])[-max_chars:]
 
     return relevant_log[-max_chars:]
+
+
+def _focus_large_file(content: str, error_snippet: str, max_lines: int = 220) -> str:
+    """
+    For large source files (e.g. driver.py > 1500 lines), extracts the relevant window around
+    selectors or log messages appearing in `error_snippet` so LLM diagnosis stays focused.
+    """
+    lines = content.splitlines()
+    if len(lines) <= max_lines:
+        return content
+
+    # Find anchor tokens from the error snippet (e.g. selector IDs or logged error messages)
+    anchors: list[str] = []
+    for token in re.findall(r"#[A-Za-z0-9_]+|[\u4e00-\u9fff]{3,}|[A-Za-z_]{6,}", error_snippet):
+        if token.lower() not in {"traceback", "error", "warning", "locator", "waiting", "visible", "enabled", "stable", "element", "button", "ktm_sniper", "browser", "driver"}:
+            anchors.append(token)
+
+    best_idx = 0
+    best_score = 0
+    for idx, line in enumerate(lines):
+        score = sum(1 for a in anchors if a in line)
+        if score > best_score:
+            best_score = score
+            best_idx = idx
+
+    half = max_lines // 2
+    start = max(0, best_idx - half)
+    end = min(len(lines), start + max_lines)
+    return "\n".join(lines[start:end])
 
 
 def extract_referenced_files(
@@ -71,9 +108,12 @@ def extract_referenced_files(
 ) -> tuple[tuple[str, str], ...]:
     """
     Finds allowed KTMTicBot Python files (`ktm_sniper/**/*.py` or `main.py`) referenced in
-    the traceback or matching logged failure messages.
+    the traceback, Python logger name (`ktm_sniper.browser.driver`), or matching failure keywords.
     """
-    matches = FILE_REF_PATTERN.findall(error_snippet)
+    matches = list(FILE_REF_PATTERN.findall(error_snippet))
+    for mod in LOGGER_MODULE_PATTERN.findall(error_snippet):
+        matches.append(mod.replace(".", "/") + ".py")
+
     seen: set[str] = set()
     results: list[tuple[str, str]] = []
     root_path = Path(project_root).resolve()
@@ -100,13 +140,14 @@ def extract_referenced_files(
                 full_path = root_path / candidate
                 if full_path.is_file():
                     seen.add(candidate)
-                    results.append((candidate, full_path.read_text(encoding="utf-8")))
+                    raw_text = full_path.read_text(encoding="utf-8")
+                    results.append((candidate, _focus_large_file(raw_text, error_snippet)))
                     break
 
     if not results:
         snippet_lower = error_snippet.lower()
         keyword_to_file = (
-            (("confirmseatbtn", "passenger", "fiuu", "duitnow", "select2"), "ktm_sniper/browser/driver.py"),
+            (("confirmseatbtn", "passenger", "fiuu", "duitnow", "select2", "btnupdateinsurance", "popupmodal", "乘车人", "locator.click"), "ktm_sniper/browser/driver.py"),
             (("telegram", "/seat", "/book"), "ktm_sniper/telegram_bot.py"),
             (("reserve_seat", "reserver"), "ktm_sniper/reserver.py"),
             (("ensure_authenticated", "multiple login"), "ktm_sniper/auth.py"),
@@ -119,9 +160,11 @@ def extract_referenced_files(
                     full_path = root_path / rel_candidate
                     if full_path.is_file() and rel_candidate not in seen:
                         seen.add(rel_candidate)
-                        results.append((rel_candidate, full_path.read_text(encoding="utf-8")))
+                        raw_text = full_path.read_text(encoding="utf-8")
+                        results.append((rel_candidate, _focus_large_file(raw_text, error_snippet)))
 
     return tuple(results)
+
 
 
 def apply_code_hunks(original_content: str, hunks: tuple[CodeHunk, ...]) -> str:

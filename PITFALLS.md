@@ -182,4 +182,64 @@
   1. 在 `ktm_sniper/telegram_bot.py` 顶部显式补齐 `import os`，并对 `ktm_sniper/browser/driver.py` 进行全局 `import os, shutil` 模块级规范化。
   2. 为 Telegram `/seat` 包含 QR 图片与自动登出的完整控制流补充自动化单元测试（`test_command_handler_seat_with_qr_and_autologout`），纳入 CI 回归基线。
 
+---
+
+### 14. `/seat auto` 自动选座仅显示 `AUTO` 而未展示实际锁定车厢与座位号
+
+* **问题现象 (Root Cause)**：
+  当用户在 Telegram 发送 `/seat auto`（或默认自动选座）时，`KTMBrowserDriver.lock_seat_and_proceed` 虽然在浏览器 DOM 中点击并锁定了具体座位，但仅返回了布尔值 `True`，未将实际选中的车厢与座位号回传至 `fill_and_submit_passenger_form` 和 `KTMSeatReserver.reserve_seat` 的返回字典中；同时 `TelegramCommandHandler._handle_seat` 直接把用户输入的指令参数 `seat_choice`（即 `"AUTO"`）拼入通知消息，导致推送的成功通知与二维码说明仅显示 `选定座位: AUTO`，用户无法得知系统实际选了哪个车厢和座位。
+* **已验证解决方案 (Verified Solution)**：
+  1. **多层提取真实车厢与座位号**：在 `KTMBrowserDriver.lock_seat_and_proceed` 中，结合 `.selectable-icon` 属性、`#seatSelect` 右侧已选席位确认表（`Coach` 与 `Seat` 列）以及 `/Book` 乘车人确认页的 `- <Coach> / <Seat>` 文本，提取完整座位信息（如 `Coach A - 6B`），支持单程与往返双程，并写入 `self.last_locked_seat`。
+  2. **全链路透传 `selected_seat`**：在 `fill_and_submit_passenger_form` 和 `KTMSeatReserver.reserve_seat` 返回结果中携带 `selected_seat` 字段。
+  3. **清晰格式化展示**：在 `TelegramCommandHandler._handle_seat` 中读取 `res.get("selected_seat")`，当用户使用 `AUTO` / `WINDOW` / `AISLE` 等偏好选座时，在二维码图片标题与锁定成功通知中展示为 `Coach A - 6B (AUTO)`，直观呈现系统实际锁定的位置。
+
+---
+
+### 15. 多乘车人 `/seat auto` 仅锁定 1 个座位（`#PassengerCount` Select2 隐藏控件与 `#fixedPax` 席位槽限制）
+
+* **问题现象 (Root Cause)**：
+  1. KTMB 官网首页与 `/Trip` 页的 `#PassengerCount` 是由 Select2 接管的隐藏 `<select>`，且其 `<option>` 会在 `#ToStationId` 变更后由 `SetMaximumPassenger()` 动态重建。直接调用 `page.select_option("#PassengerCount", ...)` 会因控件不可见而超时并被静默忽略，导致查询始终以默认 `1 Pax` 提交。
+  2. KTMB 选座弹窗 `#seatSelect` 的前端脚本（`.btn-seat-layout`、`.selectable-icon` 与 `#confirmSeatBtn`）强依赖隐藏域 `#fixedPax`（`var pax = parseInt($("#fixedPax").val())`）。若用户通过 `/add_passenger` 添加了多名乘车人后未同步 `#fixedPax` 与席位购物车槽位（`.cart tr.seat-row`），点击第 2 个座位时会被 KTMB 前端拦截报错 `"Maximum 1 seat should be selected."`。
+  3. `TelegramCommandHandler._handle_seat` 此前仅展示首位乘车人姓名，且在无头浏览器未返回 `selected_seat` 时未按乘车人数从缓存布局中自动挑选对应数量的席位。
+* **已验证解决方案 (Verified Solution)**：
+  1. **模型与引擎人数联动**：在 `SniperTaskConfig.__post_init__` 中自动确保 `required_seats = max(required_seats, len(passengers))`；在 `KTMSniperEngine.update_task` 中当乘车人数或 `required_seats` 变化时标记 `_browser_needs_update = True`。
+  2. **JS 原生同步 `#PassengerCount` 与 `#fixedPax`**：在 `KTMBrowserDriver.fill_search_criteria`、`fetch_seats_layout` 与 `lock_seat_and_proceed` 中，通过 `page.evaluate` 直接设置 `#PassengerCount`、`#fixedPax` 及 Select2 显示文本，并在当前 `/Trip` 页 `#fixedPax` 与乘车人数不一致时自动按最新人数重新查询并分配 `N` 个席位槽。
+  3. **按人数智能同行选座 (`auto`)**：当乘车人数 `N > 1` 且输入 `auto` 时，`KTMBrowserDriver.lock_seat_and_proceed` 与 `TelegramCommandHandler._auto_select_seats_from_layout` 自动优先选择余票充足的同一车厢、同一排相邻座位（如 `Coach B - 03A, Coach B - 03B, Coach B - 03C`）或相邻排座位，并在通知与二维码说明中完整展示所有选定座位与全体乘车人名单。
+
+---
+
+### 16. 往返双程 (`return_date`) 订票中的 `#seatSelect` 选座表选择器冲突与双程票种选择
+
+* **问题现象 (Root Cause)**：
+  1. 在 `#seatSelect` 弹窗中，除了右侧已选座位购物车表格（`<tbody class="cart"><tr class="seat-row">...</tr></tbody>`）外，车厢平面座位图本身也是使用 `<table><tbody><tr><td>` 渲染的。若使用宽泛选择器 `#seatSelect table tbody tr` 提取已选座位，会把整列车厢布局表的所有排（如 `2B - 2C, 3B - 3C...`）全部误提取出来，导致座位字符串过长并在调用 Telegram `sendPhoto` 时触发 `HTTP 400: Bad Request: message caption is too long`。
+  2. 往返双程（`return_date`）在去程点击 `#confirmSeatBtn` 后，KTMB 前端会异步请求 `/Trip/Reserve` 更新 `#bookingData` 并执行 `DisableReturnTripEarlierThanDepartTrip()` 禁用早于去程抵达时间的返程车次（添加 `.disabled` 类），且在 `/Book` 乘车人页为每位乘客生成去程 `Tickets_0__TicketTypeId` 与返程 `Tickets_1__TicketTypeId` 两个票种下拉框。
+* **已验证解决方案 (Verified Solution)**：
+  1. **精准限定已选席位购物车选择器**：在 `KTMBrowserDriver.lock_seat_and_proceed` 中将确认表提取选择器严格限定为 `#seatSelect .cart tr.seat-row`，仅读取用户实际加入购物车的去程与返程座位（如 `Coach A - 15D (返程: Coach A - 1A)`）。
+  2. **往返双程状态同步与可用返程车次筛选**：在 `fill_search_criteria` 与 `trigger_search` 中同步 `#ReturnDate` / `input.ReturnDate` 并等待 `tbody.return-trips tr` 渲染；去程确认座位后等待 `#seatSelect` 收起，再定位 `tbody.return-trips tr:not(.disabled) .btn-seat-layout:not(.disabled)` 选取有效返程车次；在 `/Book` 页循环为 `Tickets_0` 与 `Tickets_1` 选择 `Adult` 票种。
+
+## /Trip -> /Book 静默失败 (Timeout waiting for #Passengers_0__FullName)
+- **根因**: 点击 PROCEED TO PASSENGER DETAILS 后未到达 /Book 时，wait_for_url 异常被吞掉，错误被延迟到乘车人表单处才暴露；同时 /book1 的 etch_seats_layout 让 #seatSelect 保持打开，/Trip 状态不干净；另一个脚本 logout 会使共享的 auth_state 会话失效。
+- **解决**: etch_seats_layout 读取后关闭 #seatSelect；只点击可见的 proceed 按钮；_ensure_on_book_page 校验并抓取 KITS 弹窗文本 + 截图 data/debug_proceed_fail.png；会话失效 (KITS_SESSION_EXPIRED) 时 engine 自动重新登录并重试一次。
+- **注意**: 不要在 bot 运行时用同一账号另开会话/执行 logout。
+
+
+## 锁座阶段未生成官方票号时伪造 KITS-时间戳 导致误判已出票
+- **根因**: KITS 在乘车人表单提交后进入待支付页时仅生成加密的 `#BookingData` 和 Fiuu 支付会话，真正的官方订单号 (`K`+12位数字) 与电子票号 (`T`+12位数字) 只有在扫码付款成功后才会在 `/Booking/UpcomingList` 生成；旧代码使用 `f'KITS-{int(time.time())}'` 兜底，误导用户以为已生成官方订单。
+- **解决**: 移除伪造的 `KITS-时间戳`，未出票前统一标记为 `PENDING_PAYMENT`（待付款后生成）并提取真实应付金额 `PaymentAmount` 与 Fiuu 流水号 `FIUU-...`；新增 `/verify` 指令与 3 分钟到期自动核验定时器，通过抓取 `/Booking/UpcomingList` 的 `.my-booking` 卡片核验真实 `K` 开头订单号与 `T` 开头车票号。
+
+## Fiuu DuitNow 二维码 3 分钟超时掉单风险与 SQLite 乘客敏感资料全量加密
+- **根因**:
+  1. KITS `/Payment` 席位保留虽为 15–20 分钟，但跳转至 Fiuu 支付网关 (`pay.fiuu.com/RMS/intermediate_app/viewqr.php`) 后，网关前端 `checkTransaction(..., 180, ...)` 严格限制二维码有效倒计时为 **180 秒（3 分钟）**。若用户在 3 分钟后扫描 Telegram 中的静态二维码图片，极易发生银行扣款但网关会话已超时关闭的掉单风险。
+  2. `saved_passengers` 表此前仅对 `id_number` 加密存储 (`id_number_encrypted`)，而 `phone` 与 `email` 仍以明文写入 SQLite。
+- **解决**:
+  1. 将 `TelegramCommandHandler` 的 `expiry_timeout_seconds` 默认设为 **180 秒（3 分钟）**，在二维码说明与锁座通知中显著提示“请在收到二维码 2 分钟内扫码，超过 2 分钟切勿再扫旧码”，并在 3 分钟到期时自动核验 `/Booking/UpcomingList`、向用户推送二维码作废警告及 `FIUU-...` 网关流水号对账凭证。
+  2. 在 `ktm_sniper/storage.py` 与 `ktm_sniper/models.py` 中对 `id_number`、`phone`、`email` 全面使用 `DataEncryptor`（Fernet AES-128-CBC + HMAC-SHA256）加密落盘（`saved_passengers` 与 `tasks.passengers_json`），读取时通过 `_decrypt_field` 自动解密还原，并在 `_init_db()` 启动时通过 `_migrate_plaintext_pii()` 自动将历史明文 `phone`/`email` 迁移为密文。
+
+## Takaful 保险页 `#btnUpdateInsuranceYes` 被 `#popupModal` 遮挡并被 Step 3 重复匹配报错
+- **根因**:
+  1. KITS `/Book` 页面的 Takaful 按钮 `<button id="btnUpdateInsuranceYes">PROCEED TO PAYMENT</button>` 同样包含文本 `"PROCEED TO PAYMENT"`。
+  2. 当 Step 2 点击 `#btnUpdateInsuranceYes` 后，KITS 会弹出 `#popupModal`（含 `#popupModalOkButton` / `purchase Takaful` 确认按钮）或正在进行异步跳转；此时 Step 3 使用宽泛选择器 `button:has-text('PROCEED TO PAYMENT').last` 会再次匹配到已被 `#popupModal` 遮挡的 `#btnUpdateInsuranceYes`，触发 `Locator.click: Timeout 5000ms exceeded (<div id="popupModal"> intercepts pointer events)`。
+- **解决**:
+  1. 在 Step 2 循环检测并触发 `#popupModal.show #popupModalOkButton` / `purchase Takaful` 确认按钮（使用 `evaluate("el => el.click()")` 避免遮罩动画拦截）。
+  2. 在 Step 3 的选择器中显式排除 `#btnUpdateInsuranceYes`、`#btnUpdateInsuranceNo` 与 `#btnConfirmPayment`（`:not(#btnUpdateInsuranceYes):not(#btnUpdateInsuranceNo):not(#btnConfirmPayment)`），并增加 JS 原生点击兜底。
 

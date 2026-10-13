@@ -27,6 +27,17 @@ class Passenger:
     def masked_phone(self) -> str:
         return mask_phone(self.phone)
 
+    @property
+    def masked_email(self) -> str:
+        raw = (self.email or "").strip()
+        if not raw:
+            return ""
+        if "@" in raw:
+            local, domain = raw.rsplit("@", 1)
+            prefix = local[:2] if len(local) > 2 else local[:1]
+            return f"{prefix}****@{domain}"
+        return "****"
+
     def clean_id(self) -> str:
         return re.sub(r"[^A-Za-z0-9]", "", self.id_number)
 
@@ -36,7 +47,7 @@ class Passenger:
             "id_number": self.masked_id if mask_pii else self.id_number,
             "gender": self.gender,
             "phone": self.masked_phone if mask_pii else self.phone,
-            "email": self.email or ""
+            "email": self.masked_email if mask_pii else (self.email or "")
         }
 
     def __repr__(self) -> str:
@@ -98,6 +109,11 @@ class SniperTaskConfig:
         if self.origin.strip().upper() == self.destination.strip().upper():
             raise ValueError("Origin and destination cannot be identical.")
         self.date = normalize_date(self.date)
+        if self.passengers and self.required_seats < len(self.passengers):
+            self.required_seats = len(self.passengers)
+
+        if self.return_date and not self.is_round_trip and self.leg_type != "RETURN":
+            self.is_round_trip = True
 
         if self.is_round_trip:
             if not self.return_date:

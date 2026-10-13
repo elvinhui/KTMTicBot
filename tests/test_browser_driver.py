@@ -129,3 +129,77 @@ def test_browser_driver_fill_and_submit_passenger_form_with_qr(tmp_path):
     assert "https://" in res["payment_url"]
     assert res["payment_qr"] is not None
 
+
+def test_browser_driver_lock_seat_auto_uses_passenger_count():
+    from ktm_sniper.models import Passenger
+
+    mock_page = MagicMock()
+    mock_page.url = "https://online.ktmb.com.my/Trip"
+
+    def locator_side_effect(selector):
+        loc = MagicMock()
+        loc.first = loc
+        loc.is_visible.return_value = True
+        loc.count.return_value = 0 if "return-trips" in selector else 1
+        return loc
+
+    mock_page.locator.side_effect = locator_side_effect
+
+    # Configure mock_page.evaluate to return selected seats for 3 passengers
+    def eval_side_effect(script, arg=None):
+        if isinstance(arg, dict) and "targetCount" in arg:
+            assert arg["targetCount"] == 3
+            assert arg["pref"] == "AUTO"
+            return "Coach B - 03A, Coach B - 03B, Coach B - 03C"
+        return ""
+
+    mock_page.evaluate.side_effect = eval_side_effect
+
+    driver = KTMBrowserDriver(page=mock_page)
+    driver._last_searched_pax = 3
+    task = SniperTaskConfig(
+        origin="KL Sentral",
+        destination="Butterworth",
+        date="2026-09-20",
+        passengers=[
+            Passenger(name="PAX 1", id_number="900101015001", phone="0123456789", gender="MALE"),
+            Passenger(name="PAX 2", id_number="920202025002", phone="0123456789", gender="FEMALE"),
+            Passenger(name="PAX 3", id_number="940303035003", phone="0123456789", gender="MALE"),
+        ],
+    )
+
+    with patch("ktm_sniper.browser.driver.time.sleep"):
+        locked = driver.lock_seat_and_proceed(seat_no="auto", train_no="EG9022", task=task)
+
+    assert locked == "Coach B - 03A, Coach B - 03B, Coach B - 03C"
+    assert driver.last_locked_seat == "Coach B - 03A, Coach B - 03B, Coach B - 03C"
+
+
+def test_browser_driver_scrape_upcoming_bookings():
+    mock_page = MagicMock()
+    mock_page.url = "https://online.ktmb.com.my/Booking/UpcomingList"
+    mock_page.evaluate.return_value = [
+        {
+            "booking_no": "K261049574760",
+            "route": "JB SENTRAL BUKIT MERTAJAM",
+            "depart_date": "20 Oct 2026",
+            "return_date": "27 Oct 2026",
+            "print_url": "https://online.ktmb.com.my/Booking/PrintTicket?p=K261049574760",
+            "legs": [
+                {
+                    "route": "JB SENTRAL BUKIT MERTAJAM",
+                    "train": "Platinum - 9326",
+                    "datetime": "20 Oct 2026 / 09:55",
+                    "tickets": [{"seat": "B / 2C", "ticket_no": "T261013679970", "passenger": "TAN JIA HUI"}],
+                }
+            ],
+        }
+    ]
+    driver = KTMBrowserDriver(page=mock_page)
+    bookings = driver.scrape_upcoming_bookings()
+    assert len(bookings) == 1
+    assert bookings[0]["booking_no"] == "K261049574760"
+    assert bookings[0]["legs"][0]["tickets"][0]["ticket_no"] == "T261013679970"
+
+
+

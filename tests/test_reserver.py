@@ -88,3 +88,18 @@ def test_reserve_seat_no_passenger_raises():
     reserver = KTMSeatReserver()
     with pytest.raises(ValueError, match="At least one passenger must be provided"):
         reserver.reserve_seat("TRIP-01", "Window")
+
+
+def test_reserve_seat_with_driver_returns_selected_seat():
+    reserver = KTMSeatReserver()
+    mock_driver = MagicMock()
+    mock_driver.lock_seat_and_proceed.return_value = "Coach B - 3A"
+    mock_driver.fill_and_submit_passenger_form.return_value = {
+        "status": "SUCCESS",
+        "booking_id": "KITS-998877",
+        "payment_url": "https://online.ktmb.com.my/Payment/Checkout?bookingId=KITS-998877"
+    }
+    p = Passenger(name="John Doe", id_number="A1234567", gender="Male", phone="0123456789")
+    res = reserver.reserve_seat("9326", "AUTO", passengers=[p], driver=mock_driver)
+    assert res["status"] == "SUCCESS"
+    assert res["selected_seat"] == "Coach B - 3A"

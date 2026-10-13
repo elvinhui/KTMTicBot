@@ -199,30 +199,51 @@ def test_sqlite_get_latest_task(tmp_path):
 
 
 def test_sqlite_saved_passengers_crud(tmp_path):
+    import sqlite3
     db_path = tmp_path / "test_passengers.db"
     repo = TaskRepository(str(db_path))
 
     assert len(repo.get_saved_passengers()) == 0
 
-    p = Passenger(name="TAN JIA HUI", id_number="960217075045", gender="Male", phone="0123456789")
+    p = Passenger(name="TAN JIA HUI", id_number="960217075045", gender="Male", phone="0123456789", email="tan@example.com")
     repo.save_passenger(p)
 
+    # Verify raw SQLite columns in saved_passengers are encrypted (no plaintext IC, phone, or email)
+    conn = sqlite3.connect(str(db_path))
+    raw_row = conn.execute(
+        "SELECT id_number_encrypted, id_number_masked, phone, phone_masked, email, email_masked FROM saved_passengers"
+    ).fetchone()
+    conn.close()
+    assert raw_row[0].startswith("gAAAAA")
+    assert "960217075045" not in raw_row[0]
+    assert raw_row[1] == "960217****45"
+    assert raw_row[2].startswith("gAAAAA")
+    assert "0123456789" not in raw_row[2]
+    assert raw_row[3] == "0123****789"
+    assert raw_row[4].startswith("gAAAAA")
+    assert "tan@example.com" not in raw_row[4]
+    assert raw_row[5] == "ta****@example.com"
+
+    # Verify decryption on read
     saved = repo.get_saved_passengers()
     assert len(saved) == 1
     assert saved[0].name == "TAN JIA HUI"
     assert saved[0].id_number == "960217075045"
     assert saved[0].gender == "Male"
     assert saved[0].phone == "0123456789"
+    assert saved[0].email == "tan@example.com"
 
     # Update same passenger
-    p_updated = Passenger(name="TAN JIA HUI", id_number="960217075045", gender="Male", phone="0199999999")
+    p_updated = Passenger(name="TAN JIA HUI", id_number="960217075045", gender="Male", phone="0199999999", email="new@example.com")
     repo.save_passenger(p_updated)
     saved_after = repo.get_saved_passengers()
     assert len(saved_after) == 1
     assert saved_after[0].phone == "0199999999"
+    assert saved_after[0].email == "new@example.com"
 
     # Clear passengers
     repo.clear_saved_passengers()
     assert len(repo.get_saved_passengers()) == 0
+
 
 

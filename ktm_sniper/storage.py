@@ -110,11 +110,91 @@ class TaskRepository:
                         id_number_masked TEXT NOT NULL,
                         gender TEXT NOT NULL,
                         phone TEXT NOT NULL,
+                        phone_masked TEXT,
                         email TEXT,
+                        email_masked TEXT,
                         created_at REAL,
                         updated_at REAL
                     )
                 """)
+                for col_name, col_type in [
+                    ("phone_masked", "TEXT"),
+                    ("email_masked", "TEXT"),
+                ]:
+                    try:
+                        conn.execute(f"ALTER TABLE saved_passengers ADD COLUMN {col_name} {col_type}")
+                    except Exception:
+                        pass
+        finally:
+            conn.close()
+        self._migrate_plaintext_pii()
+
+    def _encrypt_field(self, val: Optional[str]) -> str:
+        raw = (val or "").strip()
+        if not raw:
+            return ""
+        if raw.startswith("gAAAAA"):
+            return raw
+        return self.encryptor.encrypt(raw)
+
+    def _decrypt_field(self, val: Optional[str]) -> str:
+        raw = (val or "").strip()
+        if not raw:
+            return ""
+        res = self.encryptor.decrypt(raw)
+        if res.startswith("gAAAAA") and res != raw:
+            res = self.encryptor.decrypt(res)
+        return res
+
+    def _migrate_plaintext_pii(self):
+        """
+        Ensures any legacy plaintext phone/email/id_number in saved_passengers
+        is automatically encrypted at rest on startup.
+        """
+        conn = self._get_connection()
+        try:
+            rows = conn.execute("SELECT id, name, id_number_encrypted, gender, phone, email FROM saved_passengers").fetchall()
+            with conn:
+                for r in rows:
+                    raw_id = r["id_number_encrypted"] or ""
+                    raw_phone = r["phone"] or ""
+                    raw_email = r["email"] or ""
+                    needs_mig = (
+                        (raw_id and not raw_id.startswith("gAAAAA"))
+                        or (raw_phone and not raw_phone.startswith("gAAAAA"))
+                        or (raw_email and not raw_email.startswith("gAAAAA"))
+                    )
+                    if needs_mig:
+                        dec_id = self._decrypt_field(raw_id)
+                        dec_phone = self._decrypt_field(raw_phone)
+                        dec_email = self._decrypt_field(raw_email)
+                        temp_p = Passenger(
+                            name=r["name"],
+                            id_number=dec_id,
+                            gender=r["gender"],
+                            phone=dec_phone,
+                            email=dec_email,
+                        )
+                        conn.execute(
+                            """
+                            UPDATE saved_passengers
+                            SET id_number_encrypted = ?, id_number_masked = ?,
+                                phone = ?, phone_masked = ?,
+                                email = ?, email_masked = ?
+                            WHERE id = ?
+                            """,
+                            (
+                                self._encrypt_field(dec_id),
+                                temp_p.masked_id,
+                                self._encrypt_field(dec_phone),
+                                temp_p.masked_phone,
+                                self._encrypt_field(dec_email),
+                                temp_p.masked_email,
+                                r["id"],
+                            ),
+                        )
+        except Exception:
+            pass
         finally:
             conn.close()
 
@@ -123,7 +203,16 @@ class TaskRepository:
         config.task_id = task_id
         now = time.time()
 
-        passengers_data = [p.to_dict() for p in config.passengers]
+        passengers_data = [
+            {
+                "name": p.name,
+                "id_number": self._encrypt_field(p.id_number),
+                "gender": p.gender,
+                "phone": self._encrypt_field(p.phone),
+                "email": self._encrypt_field(p.email or ""),
+            }
+            for p in config.passengers
+        ]
         raw_passengers_json = json.dumps(passengers_data)
         encrypted_passengers = self.encryptor.encrypt(raw_passengers_json)
 
@@ -219,10 +308,15 @@ class TaskRepository:
 
     def save_passenger(self, p: Passenger):
         """
-        Saves or updates a passenger profile in SQLite.
+        Saves or updates a passenger profile in SQLite with all sensitive fields
+        (id_number, phone, email) encrypted at rest.
         """
-        encrypted_id = self.encryptor.encrypt(p.id_number)
+        encrypted_id = self._encrypt_field(p.id_number)
         masked_id = p.masked_id
+        encrypted_phone = self._encrypt_field(p.phone)
+        masked_phone = p.masked_phone
+        encrypted_email = self._encrypt_field(p.email or "")
+        masked_email = p.masked_email
         now = time.time()
         conn = self._get_connection()
         try:
@@ -232,20 +326,24 @@ class TaskRepository:
                 if row:
                     conn.execute("""
                         UPDATE saved_passengers
-                        SET id_number_encrypted = ?, id_number_masked = ?, gender = ?, phone = ?, email = ?, updated_at = ?
+                        SET id_number_encrypted = ?, id_number_masked = ?, gender = ?,
+                            phone = ?, phone_masked = ?, email = ?, email_masked = ?, updated_at = ?
                         WHERE id = ?
-                    """, (encrypted_id, masked_id, p.gender, p.phone, p.email or "", now, row["id"]))
+                    """, (encrypted_id, masked_id, p.gender, encrypted_phone, masked_phone, encrypted_email, masked_email, now, row["id"]))
                 else:
                     conn.execute("""
-                        INSERT INTO saved_passengers (name, id_number_encrypted, id_number_masked, gender, phone, email, created_at, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (p.name, encrypted_id, masked_id, p.gender, p.phone, p.email or "", now, now))
+                        INSERT INTO saved_passengers (
+                            name, id_number_encrypted, id_number_masked, gender,
+                            phone, phone_masked, email, email_masked, created_at, updated_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (p.name, encrypted_id, masked_id, p.gender, encrypted_phone, masked_phone, encrypted_email, masked_email, now, now))
         finally:
             conn.close()
 
     def get_saved_passengers(self) -> List[Passenger]:
         """
-        Retrieves all saved passenger profiles from SQLite.
+        Retrieves and decrypts all saved passenger profiles from SQLite.
         """
         conn = self._get_connection()
         passengers = []
@@ -255,15 +353,17 @@ class TaskRepository:
             )
             for row in cursor.fetchall():
                 try:
-                    decrypted_id = self.encryptor.decrypt(row["id_number_encrypted"])
+                    decrypted_id = self._decrypt_field(row["id_number_encrypted"])
                 except Exception:
                     decrypted_id = row["id_number_masked"]
+                decrypted_phone = self._decrypt_field(row["phone"])
+                decrypted_email = self._decrypt_field(row["email"] or "")
                 passengers.append(Passenger(
                     name=row["name"],
                     id_number=decrypted_id,
                     gender=row["gender"],
-                    phone=row["phone"],
-                    email=row["email"] or ""
+                    phone=decrypted_phone,
+                    email=decrypted_email
                 ))
             return passengers
         finally:
@@ -376,15 +476,15 @@ class TaskRepository:
 
         passengers = []
         for p in passengers_raw:
-            id_val = p.get("id_number", "")
-            if id_val.startswith("gAAAAA"):
-                id_val = self.encryptor.decrypt(id_val)
+            id_val = self._decrypt_field(p.get("id_number", ""))
+            phone_val = self._decrypt_field(p.get("phone", ""))
+            email_val = self._decrypt_field(p.get("email", ""))
             passengers.append(Passenger(
                 name=p["name"],
                 id_number=id_val,
                 gender=p["gender"],
-                phone=p["phone"],
-                email=p.get("email", "")
+                phone=phone_val,
+                email=email_val
             ))
 
         # Extract optional round trip fields safely

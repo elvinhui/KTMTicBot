@@ -30,11 +30,11 @@ if [ "$LOCAL_SHA" != "$REMOTE_SHA" ]; then
 fi
 
 # ── 2. Check container logs for unhandled Tracebacks or runtime ERRORs ───────
-RECENT_LOGS=$(docker compose logs --since=2m --no-log-prefix ktm_sniper_bot 2>/dev/null || true)
+RECENT_LOGS=$(docker logs --since=3m ktm_sniper_bot 2>&1 || docker compose logs --since=3m --no-log-prefix ktm-sniper 2>/dev/null || true)
 
 # Match either raw Python Tracebacks OR caught logger.error() entries from ktm_sniper
-if echo "$RECENT_LOGS" | grep -Eq "Traceback \(most recent call last\):|\[ERROR\]|Encountered cycle error:|Browser scraping error:|Fatal error"; then
-  CRASH_HASH=$(echo "$RECENT_LOGS" | grep -E "Traceback|Error|Exception|\[ERROR\]" | tail -n 20 | sha256sum | awk '{print $1}')
+if echo "$RECENT_LOGS" | grep -Eq "Traceback \(most recent call last\):|\[ERROR\]|Encountered cycle error:|Browser scraping error:|Fatal error|Timeout [0-9]+ms exceeded"; then
+  CRASH_HASH=$(echo "$RECENT_LOGS" | grep -E "Traceback|Error|Exception|\[ERROR\]|Timeout" | sed -E 's/[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]+//g' | tail -n 20 | sha256sum | awk '{print $1}')
   LAST_HASH_FILE="/tmp/ktm_last_crash_hash.txt"
   PREV_HASH=$(cat "$LAST_HASH_FILE" 2>/dev/null || echo "")
 
@@ -43,7 +43,7 @@ if echo "$RECENT_LOGS" | grep -Eq "Traceback \(most recent call last\):|\[ERROR\
     echo "[$(date -Is)] ⚠️ Runtime error/traceback detected in ktm_sniper_bot!"
 
     if [ -n "${GH_PAT:-}" ]; then
-      ESCAPED_LOG=$(echo "$RECENT_LOGS" | tail -n 80 | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')
+      ESCAPED_LOG=$(echo "$RECENT_LOGS" | tail -n 100 | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')
       curl -sS -X POST \
         -H "Authorization: Bearer $GH_PAT" \
         -H "Accept: application/vnd.github+json" \
@@ -53,4 +53,5 @@ if echo "$RECENT_LOGS" | grep -Eq "Traceback \(most recent call last\):|\[ERROR\
     fi
   fi
 fi
+
 

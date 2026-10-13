@@ -57,8 +57,11 @@ class KTMSeatReserver:
 
         # 1. Real Playwright browser driver execution
         if driver is not None:
-            driver.lock_seat_and_proceed(seat_no=seat_preference, train_no=trip_id, task=task)
-            return driver.fill_and_submit_passenger_form(pass_list)
+            locked_seat = driver.lock_seat_and_proceed(seat_no=seat_preference, train_no=trip_id, task=task)
+            res = driver.fill_and_submit_passenger_form(pass_list)
+            if isinstance(res, dict) and not res.get("selected_seat") and isinstance(locked_seat, str) and locked_seat:
+                res = {**res, "selected_seat": locked_seat}
+            return res
 
         # 2. Fallback / mock session for unit tests
         if self.session is None:
