@@ -725,9 +725,20 @@ class KTMBrowserDriver:
         # If blocked on /Trip by an alert modal (e.g. "Error when cancelling booking") or lingering popup
         if max_retries > 0 and ("/Trip" in url or not url):
             logger.warning(f"⚠️ 正在处理 /Trip 页面提示并尝试重新推进至乘车人页: {alert or '未知遮罩'}")
-            self.dismiss_popup_alerts()
-            self._close_seat_modal()
-            time.sleep(1.0)
+            # Retry dismissal a few times: KITS sometimes re-renders the alert modal
+            for _attempt in range(3):
+                self.dismiss_popup_alerts()
+                self._close_seat_modal()
+                try:
+                    self.page.wait_for_selector(
+                        '#popupModal.show, #validationSummaryModal.show, .modal.show:not(#seatSelect)',
+                        state='hidden', timeout=3000
+                    )
+                except Exception:
+                    pass
+                time.sleep(0.5)
+                if not self._collect_page_alert_text():
+                    break
             self._click_proceed_to_passenger()
             try:
                 self.page.wait_for_url("**/Book**", timeout=10000)
@@ -752,6 +763,9 @@ class KTMBrowserDriver:
         login_hint = ("login" in alert.lower()) or ("/Account/Login" in url)
         if login_hint or not self.is_logged_in():
             raise RuntimeError(f"{self.SESSION_EXPIRED_MARKER}: KITS 登录会话已失效 ({alert or url})")
+        # 'Error when cancelling booking' is a transient KITS-side state; signal retryable failure
+        if "cancelling booking" in (alert or "").lower():
+            raise RuntimeError(f"KITS_TRANSIENT_CANCEL_ERROR: {alert}")
         raise RuntimeError(f"未能进入乘车人页面 (KITS 提示: {alert or '无'}; 当前页面: {url})")
 
     def lock_seat_and_proceed(
