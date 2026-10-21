@@ -187,12 +187,24 @@ class KTMSniperEngine:
                 return _attempt()
             elif self.browser_driver and "未能进入乘车人页面" in str(e):
                 logger.warning(f"⚠️ 推进至乘车人页面受阻 ({e})，正在自动清理遮罩弹窗并重试...")
+                err_text = str(e)
+                transient_cancel = "cancelling booking" in err_text.lower() or "try again later" in err_text.lower()
                 try:
                     if hasattr(self.browser_driver, "dismiss_popup_alerts"):
                         self.browser_driver.dismiss_popup_alerts()
                     if hasattr(self.browser_driver, "_close_seat_modal"):
                         self.browser_driver._close_seat_modal()
                     time.sleep(1.0)
+                    if transient_cancel:
+                        logger.info("检测到 KITS 取消预订瞬时错误，重新导航并重试订座...")
+                        try:
+                            self.browser_driver._last_searched_pax = None
+                            self.browser_driver._last_searched_return_date = "__force__"
+                            self.browser_driver.navigate_to_booking()
+                        except Exception as nav_err:
+                            logger.warning(f"重新导航失败: {nav_err}")
+                        time.sleep(1.5)
+                        return _attempt()
                     if hasattr(self.browser_driver, "_click_proceed_to_passenger"):
                         self.browser_driver._click_proceed_to_passenger()
                         try:
