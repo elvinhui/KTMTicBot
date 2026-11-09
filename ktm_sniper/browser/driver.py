@@ -458,80 +458,92 @@ class KTMBrowserDriver:
         raw_train = str(train_no or "").strip()
         clean_train = re.sub(r"[^0-9]", "", raw_train)
 
-        # 1. Attempt JS trigger directly on DOM button/anchor
+        # 1. Target the seat button itself first (not the modal, which starts hidden in DOM)
+        btn_sel = (
+            f"{tbody_cls} tr:has-text('{clean_train}') .btn-seat-layout, "
+            f"{tbody_cls} tr:has-text('{clean_train}') [data-tripdata], "
+            f"{tbody_cls} tr:has-text('{clean_train}') a:has-text('Pick Seats')"
+        ) if clean_train else (
+            f"{tbody_cls} tr .btn-seat-layout, "
+            f"{tbody_cls} tr [data-tripdata], "
+            f"{tbody_cls} tr a:has-text('Pick Seats')"
+        )
+
         try:
-            clicked = bool(self.page.evaluate(
-                """({ tbodyCls, rawTrain, cleanTrain }) => {
-                    const tbody = document.querySelector(tbodyCls);
-                    if (!tbody) return false;
-                    const rows = Array.from(tbody.querySelectorAll('tr:not(.disabled)'));
-                    if (rows.length === 0) return false;
+            self.page.wait_for_selector(btn_sel, state="visible", timeout=8000)
+        except Exception:
+            pass
 
-                    let targetRow = null;
-                    if (rawTrain || cleanTrain) {
-                        targetRow = rows.find(r => {
-                            const text = (r.innerText || '').toUpperCase();
-                            if (rawTrain && text.includes(rawTrain.toUpperCase())) return true;
-                            if (cleanTrain && text.replace(/[^0-9]/g, '').includes(cleanTrain)) return true;
-                            return false;
-                        });
-                    }
-                    if (!targetRow) targetRow = rows[0];
-                    if (!targetRow) return false;
+        # 2. Click the seat button via Playwright locator, falling back to JS/jQuery
+        clicked = False
+        try:
+            loc = self.page.locator(btn_sel).first
+            if loc.count() > 0:
+                loc.scroll_into_view_if_needed(timeout=2000)
+                loc.click(timeout=5000, force=True)
+                clicked = True
+        except Exception as ex:
+            logger.warning(f"Native locator 选座按钮点击失败: {ex}")
 
-                    const btn = targetRow.querySelector('.btn-seat-layout, a.select-btn, [data-tripdata], a, button');
-                    if (!btn) return false;
+        if not clicked:
+            try:
+                clicked = bool(self.page.evaluate(
+                    """({ tbodyCls, rawTrain, cleanTrain }) => {
+                        const tbody = document.querySelector(tbodyCls);
+                        if (!tbody) return false;
+                        const rows = Array.from(tbody.querySelectorAll('tr:not(.disabled)'));
+                        if (rows.length === 0) return false;
 
-                    try { btn.scrollIntoView({ block: 'center', behavior: 'instant' }); } catch (e) {}
-                    btn.click();
-                    return true;
-                }""",
-                {"tbodyCls": tbody_cls, "rawTrain": raw_train, "cleanTrain": clean_train}
-            ))
-        except Exception as e:
-            logger.warning(f"JS 触发选座按钮失败: {e}")
+                        let targetRow = null;
+                        if (rawTrain || cleanTrain) {
+                            targetRow = rows.find(r => {
+                                const text = (r.innerText || '').toUpperCase();
+                                if (rawTrain && text.includes(rawTrain.toUpperCase())) return true;
+                                if (cleanTrain && text.replace(/[^0-9]/g, '').includes(cleanTrain)) return true;
+                                return false;
+                            });
+                        }
+                        if (!targetRow) targetRow = rows[0];
+                        if (!targetRow) return false;
 
-        # 2. Wait for #seatSelect modal to become visible
+                        const btn = targetRow.querySelector('.btn-seat-layout, a.select-btn, [data-tripdata], a, button');
+                        if (!btn) return false;
+
+                        try { btn.scrollIntoView({ block: 'center', behavior: 'instant' }); } catch (e) {}
+                        btn.click();
+                        if (window.jQuery) {
+                            try { window.jQuery(btn).trigger('click'); } catch (e) {}
+                        }
+                        return true;
+                    }""",
+                    {"tbodyCls": tbody_cls, "rawTrain": raw_train, "cleanTrain": clean_train}
+                ))
+            except Exception as e:
+                logger.warning(f"JS 触发选座按钮失败: {e}")
+
+        # 3. Wait for the seat modal to open (wait for .show or dialog contents, not hidden modal wrapper)
         modal_opened = False
         try:
-            self.page.wait_for_selector("#seatSelect", state="visible", timeout=6000)
+            self.page.wait_for_selector(
+                "#seatSelect.show, #seatSelect .modal-dialog, #seatSelect .selectable-icon, #seatSelect .coache-btn, #seatSelect .cart",
+                state="visible",
+                timeout=12000
+            )
             modal_opened = True
         except Exception:
-            modal_opened = False
-
-        # 3. If modal didn't open, retry with Playwright native locator click
-        if not modal_opened:
             try:
-                self.dismiss_popup_alerts()
-                loc = None
-                if clean_train:
-                    loc = self.page.locator(
-                        f"{tbody_cls} tr:has-text('{clean_train}') .btn-seat-layout, "
-                        f"{tbody_cls} tr:has-text('{clean_train}') [data-tripdata], "
-                        f"{tbody_cls} tr:has-text('{clean_train}') a:has-text('Pick Seats')"
-                    ).first
-                if not loc or loc.count() == 0:
-                    loc = self.page.locator(
-                        f"{tbody_cls} tr .btn-seat-layout, "
-                        f"{tbody_cls} tr [data-tripdata], "
-                        f"{tbody_cls} tr a:has-text('Pick Seats')"
-                    ).first
-
-                if loc and loc.count() > 0:
-                    try:
-                        loc.scroll_into_view_if_needed(timeout=2000)
-                    except Exception:
-                        pass
-                    loc.click(timeout=4000, force=True)
-                    self.page.wait_for_selector("#seatSelect", state="visible", timeout=6000)
-                    modal_opened = True
-            except Exception as ex:
-                logger.warning(f"Native locator 选座按钮点击重试失败: {ex}")
+                modal_opened = bool(self.page.evaluate("""() => {
+                    const m = document.querySelector('#seatSelect');
+                    if (!m) return false;
+                    return m.classList.contains('show') || (m.style && m.style.display === 'block') || !!m.querySelector('.selectable-icon, .coache-btn');
+                }"""))
+            except Exception:
+                modal_opened = False
 
         # 4. If modal is visible, wait briefly for seat icons or coaches to be rendered
         if modal_opened:
             try:
-                self.page.wait_for_selector("#seatSelect .selectable-icon, #seatSelect .coache-btn, #seatSelect .cart", state="visible", timeout=4000)
+                self.page.wait_for_selector("#seatSelect .selectable-icon, #seatSelect .coache-btn, #seatSelect .cart", state="visible", timeout=6000)
             except Exception:
                 pass
             time.sleep(0.5)
