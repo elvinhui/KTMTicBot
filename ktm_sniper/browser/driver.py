@@ -1569,6 +1569,24 @@ class KTMBrowserDriver:
             except Exception:
                 pass
 
+            # If still on /Book, try clicking #btnConfirmPayment as a fallback
+            # (UpdatePassenger may only validate the form without navigating)
+            if "/Book" in (self.page.url or ""):
+                try:
+                    fallback_btn = self.page.locator("#btnConfirmPayment").first
+                    if fallback_btn.count() > 0 and fallback_btn.is_visible():
+                        logger.info("📝 UpdatePassenger 未触发跳转，尝试点击 #btnConfirmPayment 作为后备...")
+                        try:
+                            fallback_btn.click(timeout=5000)
+                        except Exception:
+                            fallback_btn.evaluate("el => el.click()")
+                        try:
+                            self.page.wait_for_url(lambda u: "/Book" not in u or "Payment" in u or "Checkout" in u, timeout=15000)
+                        except Exception:
+                            pass
+                except Exception as fb_err:
+                    logger.warning(f"后备 #btnConfirmPayment 点击失败: {fb_err}")
+
             # If still on /Book, check if UpdatePassenger was rejected by KITS
             if "/Book" in (self.page.url or ""):
                 alert_text = self._collect_page_alert_text()
