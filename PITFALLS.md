@@ -276,3 +276,14 @@
   1. **精准定位按钮与弹窗激活态等待**：`_open_seat_modal_for_trip` 优先针对车次行的具体选座按钮（`btn_sel`）进行可见性等待与定位点击（Playwright Locator 原生触发结合 DOM/jQuery 兜底）；等待目标修正为 `#seatSelect.show, #seatSelect .modal-dialog, #seatSelect .selectable-icon, #seatSelect .coache-btn, #seatSelect .cart`，将网络容错延长至 12s。
   2. **OKU 残障专座全链路过滤**：在 `fetch_seats_layout` 和 `lock_seat_and_proceed` 的 DOM 筛选中全量过滤包含 `OKU` 与 `WHEELCHAIR` 的席位，确保 3 位乘客均分配正规 Adult 席位。
   3. **移除不合规的 `frm.submit()` 兜底**：乘车人表单完全由 `UpdatePassenger` 官方 AJAX 提交，杜绝页面刷新清空已填乘客信息。
+
+
+## 20. ETS 售罄车次常驻 4 席 OKU 专座导致误匹配与伪造座舱布局 (`_get_fallback_layout`) 假订票
+- **问题现象 (Root Cause)**:
+  1. KTMB KITS 线上系统的 ETS Gold 与 Platinum 列车在 D 节车厢永久保留 4 个残障人士专座（OKU Wheelchair: 12A, 12B, 12C, 12D）。当整列车所有普通客票全部售罄时，KITS 后台与 `/Trip/Trip` 表格依然将未使用的 OKU 席位计入总数，显示 `Seats: 4`。
+  2. 原 `matches_trip` 仅简单比较 `available_seats >= target_seats`。对于需要 1~4 席的常规乘客，售罄车次（如 9522、9524、9528、9530、9562）均被误判为有票并推送到 Telegram。
+  3. 当用户回复 `/book 1` 时，旧代码的 `_get_fallback_layout()` 与 `_auto_select_seats_from_layout()` 在检测到正规座位数为 0 时，兜底伪造了 Coach B 与 Coach C 的虚假席位（03A, 03B, 04A...），误导用户回复 `/seat auto`，最终在真实无头浏览器下单时因无可用普通席位而报错 `未能打开车次 9522 的去程选座窗口（可能车票已售罄）`。
+- **已验证解决方案 (Verified Solution)**:
+  1. **ETS OKU 阈值扣减与零票车次彻底剔除**：在 [`ktm_sniper/models.py`](file:///c:/Users/KATANA%2017%20B13V/Documents/projects/项目规划___自动抢KTM火车票机器人_20260914/ktm_sniper/models.py) 的 `matches_trip` 中，针对 ETS 车次自动扣除 4 个专座计算有效正规席位 `effective = max(0, available_seats - 4)`。凡 `available_seats <= 4` 或 `effective < target_seats` 的车次一概不匹配、不显示、不尝试预订。
+  2. **彻底清除虚假座舱布局兜底**：在 `driver.py`、`engine.py`、`telegram_bot.py` 中将 `_get_fallback_layout` 全部置为空字典 `{}`，杜绝伪造假席位。
+  3. **选座指令前端防呆截断**：在 `_handle_book` 中核查正规席位数，若不足所需人数直接拦截并提示用户更换有票车次。
