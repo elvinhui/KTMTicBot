@@ -1717,7 +1717,7 @@ class KTMBrowserDriver:
             except Exception:
                 pass
 
-            current_url = self.page.url
+            current_url = self.page.url if isinstance(getattr(self.page, "url", None), str) else ""
             screenshot_path = "reservation_success.png"
             try:
                 self.page.screenshot(path=screenshot_path, full_page=True)
@@ -1726,7 +1726,7 @@ class KTMBrowserDriver:
 
             # Extract Booking ID from page or URL
             import re
-            m = re.search(r"bookingId=([A-Za-z0-9\-_]+)", current_url, re.IGNORECASE)
+            m = re.search(r"bookingId=([A-Za-z0-9\-_]+)", current_url, re.IGNORECASE) if current_url else None
             official_id = ""
             if m:
                 official_id = m.group(1)
@@ -1743,7 +1743,7 @@ class KTMBrowserDriver:
                 except Exception:
                     pass
 
-            if not official_id:
+            if not official_id or not isinstance(official_id, str):
                 official_id = "PENDING_PAYMENT"
 
             # Determine payment/checkout URL:
@@ -1765,10 +1765,10 @@ class KTMBrowserDriver:
             try:
                 # Save pre-payment HTML for debugging and audit, and extract real PaymentAmount
                 try:
-                    pre_html = self.page.content()
-                    with open("data/payment_page.html", "w", encoding="utf-8") as f:
-                        f.write(pre_html)
-                    if isinstance(pre_html, str):
+                    pre_html = self.page.content() if hasattr(self.page, "content") else None
+                    if isinstance(pre_html, str) and pre_html:
+                        with open("data/payment_page.html", "w", encoding="utf-8") as f:
+                            f.write(pre_html)
                         m_amt = re.search(r'name="PaymentAmount"[^>]*value="([0-9]+(?:\.[0-9]+)?)"', pre_html, re.IGNORECASE)
                         if not m_amt:
                             m_amt = re.search(r'Order\s*Amount[^0-9]*RM\s*([0-9,]+(?:\.[0-9]+)?)', pre_html, re.IGNORECASE)
@@ -1956,10 +1956,10 @@ class KTMBrowserDriver:
 
                     # Save gateway page HTML for audit & extract Fiuu transaction reference
                     try:
-                        gw_html = target_page.content()
-                        with open("data/gateway_page.html", "w", encoding="utf-8") as f:
-                            f.write(gw_html)
-                        if isinstance(gw_html, str):
+                        gw_html = target_page.content() if hasattr(target_page, "content") else None
+                        if isinstance(gw_html, str) and gw_html:
+                            with open("data/gateway_page.html", "w", encoding="utf-8") as f:
+                                f.write(gw_html)
                             m_k_gw = re.search(r"\b(K\d{10,14})\b", gw_html)
                             if m_k_gw and official_id == "PENDING_PAYMENT":
                                 official_id = m_k_gw.group(1)
@@ -2029,16 +2029,17 @@ class KTMBrowserDriver:
                         has_qr = True
 
                     # Update booking ID & checkout URL
-                    final_url = target_page.url
-                    m_final = re.search(r"orderid=([A-Za-z0-9\-_]+)", final_url, re.IGNORECASE)
-                    if not m_final:
-                        m_final = re.search(r"bookingId=([A-Za-z0-9\-_]+)", final_url, re.IGNORECASE)
-                    if m_final:
-                        official_id = m_final.group(1)
+                    final_url = target_page.url if isinstance(getattr(target_page, "url", None), str) else ""
+                    if final_url:
+                        m_final = re.search(r"orderid=([A-Za-z0-9\-_]+)", final_url, re.IGNORECASE)
+                        if not m_final:
+                            m_final = re.search(r"bookingId=([A-Za-z0-9\-_]+)", final_url, re.IGNORECASE)
+                        if m_final:
+                            official_id = m_final.group(1)
 
-                    if target_page != self.page and target_page.url.startswith("http"):
-                        checkout_url = target_page.url
-                    elif "payment" in final_url.lower() or "checkout" in final_url.lower() or "book" in final_url.lower():
+                    if target_page != self.page and final_url.startswith("http"):
+                        checkout_url = final_url
+                    elif final_url and ("payment" in final_url.lower() or "checkout" in final_url.lower() or "book" in final_url.lower()):
                         checkout_url = final_url
                 else:
                     if os.path.exists(screenshot_path):

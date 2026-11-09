@@ -134,6 +134,65 @@ def test_browser_driver_fill_and_submit_passenger_form_with_qr(tmp_path):
     assert res["payment_qr"] is not None
 
 
+def test_browser_driver_fill_and_submit_passenger_form_mock_content_non_string(tmp_path):
+    """Verify that when mock_page.content() returns a MagicMock (non-string),
+    re.search is guarded and does not raise TypeError, allowing payment_qr to be returned."""
+    mock_page = MagicMock()
+    mock_page.url = "https://online.ktmb.com.my/Payment/Checkout?bookingId=TEST-67890"
+    # mock_page.content() returns default MagicMock() (not a string)
+    assert isinstance(mock_page.content(), MagicMock)
+
+    mock_context = MagicMock()
+    mock_context.pages = [mock_page]
+    mock_page.context = mock_context
+
+    mock_frame = MagicMock()
+    mock_frame.name = "payment_frame"
+    mock_frame.url = "https://gateway.duitnow.my/checkout"
+    mock_page.frames = [mock_frame]
+
+    mock_qr_elem = MagicMock()
+    mock_qr_elem.is_visible.return_value = True
+    mock_qr_elem.bounding_box.return_value = {"width": 150, "height": 150}
+
+    mock_matches = MagicMock()
+    mock_matches.count.return_value = 1
+    mock_matches.nth.return_value = mock_qr_elem
+    mock_frame.locator.return_value = mock_matches
+
+    def eval_side_effect(script, *args, **kwargs):
+        if "btnGoPaymentDuitNow" in script:
+            return {"found": True, "id": "btnGoPaymentDuitNow"}
+        if "btnProceedToPayment" in script:
+            return {"clicked": True, "text": "CLICK HERE TO PROCEED TO PAYMENT GATEWAY"}
+        return None
+
+    mock_page.evaluate.side_effect = eval_side_effect
+
+    def fake_screenshot(path):
+        import os
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as f:
+            f.write(b"PNG_FAKE_IMAGE_DATA_BYTES_OVER_2000" * 100)
+
+    mock_qr_elem.screenshot.side_effect = fake_screenshot
+
+    mock_default_loc = MagicMock()
+    mock_default_loc.count.return_value = 1
+    mock_default_loc.is_visible.return_value = True
+    mock_page.locator.return_value = mock_default_loc
+    mock_default_loc.first = mock_default_loc
+    mock_default_loc.last = mock_default_loc
+
+    driver = KTMBrowserDriver(page=mock_page)
+    passengers = [{"name": "TAN JIA HUI", "id_number": "960217075045", "phone": "0123456789", "gender": "Male"}]
+
+    res = driver.fill_and_submit_passenger_form(passengers)
+    assert res["status"] == "SUCCESS"
+    assert res["booking_id"] == "TEST-67890"
+    assert res["payment_qr"] is not None
+
+
 def test_browser_driver_lock_seat_auto_uses_passenger_count():
     from ktm_sniper.models import Passenger
 
