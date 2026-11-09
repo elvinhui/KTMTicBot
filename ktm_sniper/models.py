@@ -153,8 +153,23 @@ class SniperTaskConfig:
     def matches_trip(self, trip: TripInfo) -> bool:
         # Check seat capacity
         target_seats = max(self.required_seats, len(self.passengers)) if self.passengers else self.required_seats
-        if trip.available_seats < target_seats:
+        if trip.available_seats < target_seats or trip.available_seats <= 0:
             return False
+
+        # In KITS, ETS trains reserve 4 seats in Coach D for OKU (wheelchair) only.
+        # Regular passengers cannot purchase OKU seats with Adult fare (rejected by KITS backend).
+        # Any ETS train with available_seats <= 4 has 0 bookable general seats.
+        # To guarantee enough general seats for regular passengers, effective_seats = max(0, available_seats - 4).
+        is_ets = (
+            any(c in str(trip.train_class).upper() for c in ['ETS', 'GOLD', 'PLATINUM'])
+            or str(trip.train_no).strip().isdigit()
+            or str(trip.train_no).strip().upper().startswith(('EG', 'EP', 'ER', 'ET', '9'))
+        )
+        if is_ets:
+            if trip.available_seats <= 4:
+                return False
+            if (trip.available_seats - 4) < target_seats:
+                return False
 
         # Check departure time window
         dep_time = trip.departure_time.strip()

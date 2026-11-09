@@ -26,7 +26,7 @@ def test_trip_info_matches_filter_criteria():
         destination="Butterworth",
         departure_time="08:30",
         arrival_time="12:45",
-        available_seats=5,
+        available_seats=10,
         fare=59.0
     )
     trip_night = TripInfo(
@@ -36,7 +36,7 @@ def test_trip_info_matches_filter_criteria():
         destination="Butterworth",
         departure_time="20:00",
         arrival_time="23:55",
-        available_seats=2,
+        available_seats=6,
         fare=79.0
     )
 
@@ -83,6 +83,26 @@ def test_trip_info_matches_filter_criteria():
     )
     assert config_seats.matches_trip(trip_morning) is True
     assert config_seats.matches_trip(trip_night) is False  # Only 2 seats available
+
+    # Filter: ETS OKU seats threshold (<= 4 available seats are reserved for OKU and rejected for general passengers)
+    trip_oku_only = TripInfo(
+        train_no="EP9204",
+        train_class="ETS Platinum",
+        origin="KL Sentral",
+        destination="Butterworth",
+        departure_time="20:00",
+        arrival_time="23:55",
+        available_seats=4,
+        fare=79.0
+    )
+    config_single = SniperTaskConfig(
+        origin="KL Sentral",
+        destination="Butterworth",
+        date="2026-09-20",
+        required_seats=1
+    )
+    assert config_single.matches_trip(trip_oku_only) is False
+
 
 def test_sniper_task_config_validation():
     with pytest.raises(ValueError, match="Origin and destination cannot be identical"):

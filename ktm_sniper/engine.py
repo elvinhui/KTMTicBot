@@ -134,16 +134,7 @@ class KTMSniperEngine:
         return self._get_fallback_seats_layout()
 
     def _get_fallback_seats_layout(self) -> Dict[str, Dict[str, List[str]]]:
-        return {
-            "B": {
-                "window": ["03A", "03D", "04A", "04D", "05A", "05D"],
-                "aisle":  ["03B", "03C", "04B", "04C", "05B", "05C"]
-            },
-            "C": {
-                "window": ["02A", "02D", "06A", "06D"],
-                "aisle":  ["02B", "02C", "06B", "06C"]
-            }
-        }
+        return {}
 
     def execute_real_booking(self, trip: Any, seat_no: str = "auto", return_seat_no: Optional[str] = None) -> Dict[str, Any]:
         return self.run_in_browser_thread(self._execute_real_booking_sync, trip, seat_no, return_seat_no, timeout=180.0)

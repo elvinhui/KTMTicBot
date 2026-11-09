@@ -266,8 +266,7 @@ def test_fetch_seats_layout_success_and_fallback():
     assert 'B' in layout
     assert '03A' in layout['B']['window']
 
-    # When modal fails to open, returns fallback layout
+    # When modal fails to open, returns empty layout (no fake fallback)
     driver._open_seat_modal_for_trip.return_value = False
     fallback = driver.fetch_seats_layout('9044')
-    assert 'B' in fallback
-    assert len(fallback['B']['window']) > 0
+    assert fallback == {}

@@ -435,16 +435,7 @@ class KTMBrowserDriver:
 
     @staticmethod
     def _get_fallback_layout() -> Dict[str, Dict[str, List[str]]]:
-        return {
-            "B": {
-                "window": ["03A", "03D", "04A", "04D", "05A", "05D"],
-                "aisle":  ["03B", "03C", "04B", "04C", "05B", "05C"]
-            },
-            "C": {
-                "window": ["02A", "02D", "06A", "06D"],
-                "aisle":  ["02B", "02C", "06B", "06C"]
-            }
-        }
+        return {}
 
     def _open_seat_modal_for_trip(self, tbody_cls: str, train_no: Optional[str] = None) -> bool:
         """
@@ -668,8 +659,8 @@ class KTMBrowserDriver:
             logger.warning(f"获取车次 {train_no} 实时座舱布局时异常: {e}")
             self._close_seat_modal()
 
-        # Fallback layout
-        return self._get_fallback_layout()
+        # No fake fallback layout: return empty dict if no seats are available
+        return {}
     def scrape_return_trips(self) -> List[TripInfo]:
         """
         Scrapes available return trips from tbody.return-trips on KITS /Trip page.

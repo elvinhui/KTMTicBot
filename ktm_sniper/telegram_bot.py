@@ -841,6 +841,19 @@ class TelegramCommandHandler:
         coaches = self.engine.fetch_seats_layout(train_no)
         self.engine.available_seats_cache = coaches
 
+        if isinstance(coaches, dict):
+            total_reg_seats = sum(len(c.get("window", [])) + len(c.get("aisle", [])) for c in coaches.values() if isinstance(c, dict))
+        elif isinstance(coaches, list):
+            total_reg_seats = sum(len(c.get("seats", [])) if isinstance(c, dict) else 1 for c in coaches)
+        else:
+            total_reg_seats = 0
+        req_seats = max(getattr(self.engine.task, "required_seats", 1), len(getattr(self.engine.task, "passengers", []))) if self.engine.task else 1
+        if total_reg_seats < req_seats:
+            return (
+                f"⚠️ 车次 *{train_no}* 当前已无可订正规余票（仅余残疾人专座或已被抢空，需要 {req_seats} 席，仅剩 {total_reg_seats} 席）。\n\n"
+                f"💡 系统已为您过滤无票车次，请回复 `/book <其他车次序号>` 选择其他有余票的车次！"
+            )
+
         ret_trips = self._ensure_return_trips(ignore_time_filter=True) if ret_date else []
         sel_ret_trip = getattr(self.engine, "selected_return_trip", None)
         ret_tf = getattr(self.engine.task, "return_time_from", "00:00") or "00:00"
@@ -894,12 +907,7 @@ class TelegramCommandHandler:
         import re
 
         if not isinstance(coaches, dict) or not coaches:
-            coaches = {
-                "B": {
-                    "window": ["03A", "03D", "04A", "04D", "05A", "05D"],
-                    "aisle": ["03B", "03C", "04B", "04C", "05B", "05C"],
-                }
-            }
+            return ""
 
         def _seat_sort_key(seat_str: str):
             m = re.match(r"^(\d+)([A-Z]*)$", seat_str.strip().upper())
