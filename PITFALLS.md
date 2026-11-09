@@ -298,3 +298,42 @@
   1. **显式 PNR 异步就绪栅栏**：在 `fill_and_submit_passenger_form` 中，触发 PNR 选择后，显式等待所有异步 AJAX 完成（`window.jQuery.active === 0` 且无 `data-isloading="True"` 的临时选项）。
   2. **全乘车人与往返程票种显式设定**：异步加载完成后，对去程（`.OnwardTicketTypeId`）和返程（`.ReturnTicketTypeId`）每个乘客的票种下拉框均显式选中 `DEWASA/ADULT`（`value="Adult"`），并触发 `change` 事件同步，确保表单满足所有客户端与服务端校验。
   3. **单会话互斥提示与守护**：提醒用户在机器人抢票期间，确保个人电脑浏览器与手机 App 中的 KTMB 账号处于【退出登录 (Log Out)】状态，保障云端机器人的无头浏览器拥有唯一合法的排他会话。
+
+
+---
+
+## 2026-11-09: KTMB KITS /Book 单路径多步结账向导与弹窗支付网关拦截陷阱
+
+### 1. 现象描述 (Symptoms)
+- 乘车人表单提交后抛出异常：`预订下单失败: KTMB 官方下单失败 (乘车人表单提交失败: 乘车人页面提交超时（可能数据校验未通过或座位已失效）)。请确认已登录 KTMB 且座位有效。`
+- 或者点击 DuitNow QR 支付后， Telegram 收到的截图是带倒计时的黄色网关跳转按钮（`Click HERE to proceed to payment gateway`），而非真正的 DuitNow 二维码。
+
+### 2. 根因剖析 (Root Cause)
+1. **KITS 多步骤单路径向导 URL 不变性**：
+   KTMB KITS 的整个结账流程：
+   - 步骤 1：乘车人详情（Passenger Details）
+   - 步骤 2：保险详情（Insurance details，表单 `/Book/UpdateInsurance`）
+   - 步骤 3：支付方式选择（Payment details）
+   **全部位于同一个 URL `https://online.ktmb.com.my/Book` 渲染！**
+   旧驱动代码使用 `self.page.wait_for_url(lambda u: "/Book" not in u ...)` 以及 `if "/Book" in self.page.url: raise RuntimeError(...)`，误认为 URL 仍为 `/Book` 就是超时失败，导致在刚刚进入保险步骤时即被错误判定为超时中断！
+2. **Takaful 保险拒绝二次确认模态窗**：
+   点击 `#btnUpdateInsuranceNo`（No Thanks）后，KITS 会弹出确认模态框（`#popupModal.show`），提示 *"Are you sure you don’t want to purchase Takaful?"*。若未点击模态框中的确认按钮，页面无法推进至支付详情。
+3. **DuitNow QR 弹窗与支付网关独立渲染**：
+   在 Payment details 点击 `#btnGoPaymentDuitNow` 后，KITS 并不直接渲染二维码，而是进入倒计时页面并展示 `<input id="PaymentGateway" type="button" value="Click HERE to proceed to payment gateway">`。该按钮在 JS 中通过 `window.open(_paymentUrl, "KTMBOnline", ...)` 打开 Fiuu（原 Razer Merchant Services）弹窗网关。在网关页面需点击 `#pay-now-nomultipayment` 确认支付，才会生成真正的马来西亚国家 DuitNow QR 二维码。
+
+### 3. 验证与彻底修复 (Verified Solution)
+1. **DOM 状态感知判定推进**：
+   使用 `wait_for_function` 检测 `#Passengers_0__FullName` 消失，且 `#btnUpdateInsuranceNo` / `#btnGoPaymentDuitNow` 出现。仅在仍然滞留在乘车人表单字段时才收集错误并报错：
+   ```python
+   self.page.wait_for_function("""() => {
+       const onPax = !!document.querySelector('#Passengers_0__FullName, input.FullName');
+       const onIns = !!document.querySelector('#btnUpdateInsuranceNo, #btnUpdateInsuranceYes');
+       const onPay = !!document.querySelector('#btnGoPaymentDuitNow, #btnGoPaymentRazer') || (document.title || '').includes('Payment');
+       return !onPax || onIns || onPay;
+   }""", timeout=25000)
+   ```
+2. **全自动保险与二次确认处理**：
+   自动识别 `#btnUpdateInsuranceNo` 并点击，随后通过 DOM 处理弹窗模态框中的确认按钮。
+3. **弹窗网关捕获与二维码提取**：
+   使用 Playwright 的 `with self.page.expect_popup() as popup_info:` 捕获 `#PaymentGateway` 点击后新开的 Fiuu 支付弹窗。
+   在网关页面触发 `#pay-now-nomultipayment`，提取真实的 DuitNow QR 元素并截图保存到 `data/payment_qr.png`。
