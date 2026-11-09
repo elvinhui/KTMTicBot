@@ -287,3 +287,14 @@
   1. **ETS OKU 阈值扣减与零票车次彻底剔除**：在 [`ktm_sniper/models.py`](file:///c:/Users/KATANA%2017%20B13V/Documents/projects/项目规划___自动抢KTM火车票机器人_20260914/ktm_sniper/models.py) 的 `matches_trip` 中，针对 ETS 车次自动扣除 4 个专座计算有效正规席位 `effective = max(0, available_seats - 4)`。凡 `available_seats <= 4` 或 `effective < target_seats` 的车次一概不匹配、不显示、不尝试预订。
   2. **彻底清除虚假座舱布局兜底**：在 `driver.py`、`engine.py`、`telegram_bot.py` 中将 `_get_fallback_layout` 全部置为空字典 `{}`，杜绝伪造假席位。
   3. **选座指令前端防呆截断**：在 `_handle_book` 中核查正规席位数，若不足所需人数直接拦截并提示用户更换有票车次。
+
+
+## 21. KITS `/Book` 乘车人 PNR 异步加载竞态条件与 KTMB 单设备在线互斥
+- **问题现象 (Root Cause)**:
+  1. 在 `/Book` 页面，当勾选 `IsSelf` 或从 `PNRSelect` 选择“亲友 (Friends & Family)”乘车人时，KITS 会异步向 `/Book/GetPassengerPNRTicketTypeV4` 发送 AJAX 请求，获取票种列表并在完成回调（`GetPassengerPNRTicketTypeDone`）中填充加密字段 `PassengerPNRData`。
+  2. 若代码触发 PNR 变更后未显式等待该异步网络请求完成，便立即调用 `UpdatePassenger()`，由于 `PassengerPNRData` 仍为空、票种下拉框处于 `Loading...` 或初始状态，KITS 服务端校验会直接拒绝并返回 `status: false`，触发前端弹窗：`Alert: Error when updating booking. Close`。同时，若票种未显式选中 `DEWASA/ADULT`，前端也会拦截并提示 `Ticket type is required`。
+  3. **KTMB 限制单设备在线 (Single Active Session)**：KITS 服务端对账号登录严格实施单会话控制。如果用户在个人电脑浏览器或手机端登录了 `online.ktmb.com.my`，后台机器人的认证会话会被立即注销，报错 `KTMB 限制单设备在线！检测到该账号当前已在其他浏览器或手机端登录`，导致后续自动化预订无法以已认证身份进行。
+- **已验证解决方案 (Verified Solution)**:
+  1. **显式 PNR 异步就绪栅栏**：在 `fill_and_submit_passenger_form` 中，触发 PNR 选择后，显式等待所有异步 AJAX 完成（`window.jQuery.active === 0` 且无 `data-isloading="True"` 的临时选项）。
+  2. **全乘车人与往返程票种显式设定**：异步加载完成后，对去程（`.OnwardTicketTypeId`）和返程（`.ReturnTicketTypeId`）每个乘客的票种下拉框均显式选中 `DEWASA/ADULT`（`value="Adult"`），并触发 `change` 事件同步，确保表单满足所有客户端与服务端校验。
+  3. **单会话互斥提示与守护**：提醒用户在机器人抢票期间，确保个人电脑浏览器与手机 App 中的 KTMB 账号处于【退出登录 (Log Out)】状态，保障云端机器人的无头浏览器拥有唯一合法的排他会话。
