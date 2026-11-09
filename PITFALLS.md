@@ -265,3 +265,14 @@
   1. **按需退选与弹窗阻断消除**：在 `seat_select_js` 中仅在席位数超出目标总数时才退选多余席位，杜绝无意义的退选接口调用。
   2. **全局模态提示清理 (`dismiss_popup_alerts`)**：在选座确认与推进前后，自动扫描并点击 `#popupModalOkButton` / `#popupModalCloseButton` 或强力移除遮罩层。
   3. **弹窗自愈重试机制**：在 `_ensure_on_book_page` 与 `engine.py` 中，一旦检测到非会话失效的页面阻断提示（如 `cancelling booking`），自动清理弹窗并重试触发提交至 `/Book`，确保订座流程具备自我修复弹性。
+
+
+## 19. `#seatSelect` 模态框常驻 DOM 隐藏状态引发 `wait_for_selector` 假死与 OKU 专座票种校验拦截
+- **问题现象 (Root Cause)**:
+  1. `#seatSelect` 是一个带有 `modal fade` 和 `aria-hidden="true"`、`style="display: none"` 的 Bootstrap 静态容器。旧代码在点击选座按钮之前/之后直接调用 `wait_for_selector("#seatSelect", state="visible")`。由于 KITS 是通过异步 AJAX (`/Trip/LayoutV2`) 获取座舱布局后再调用 `$('#seatSelect').modal('show')` 添加 `.show` 类，在此期间 `#seatSelect` 一直是 `hidden`，导致 Playwright 判定超时报错 `waiting for locator("#seatSelect") to be visible (16 × locator resolved to hidden)`，进而下游误判“未能打开选座窗口（可能车票已售罄）”。
+  2. 选座时如果误选了残障人士专座（含 `OKU`、`WHEELCHAIR`，例如 Coach D 的 12 行），在 `/Book` 页面选择 `DEWASA/ADULT` 票种时会被 KITS 后台拒绝，返回 `Data is invalid`。
+  3. 旧代码在 `UpdatePassengerV4` 响应后兜底调用 `frm.submit()`，导致表单被原生刷新清空（全部恢复为 Please select / 空白输入）。
+- **已验证解决方案 (Verified Solution)**:
+  1. **精准定位按钮与弹窗激活态等待**：`_open_seat_modal_for_trip` 优先针对车次行的具体选座按钮（`btn_sel`）进行可见性等待与定位点击（Playwright Locator 原生触发结合 DOM/jQuery 兜底）；等待目标修正为 `#seatSelect.show, #seatSelect .modal-dialog, #seatSelect .selectable-icon, #seatSelect .coache-btn, #seatSelect .cart`，将网络容错延长至 12s。
+  2. **OKU 残障专座全链路过滤**：在 `fetch_seats_layout` 和 `lock_seat_and_proceed` 的 DOM 筛选中全量过滤包含 `OKU` 与 `WHEELCHAIR` 的席位，确保 3 位乘客均分配正规 Adult 席位。
+  3. **移除不合规的 `frm.submit()` 兜底**：乘车人表单完全由 `UpdatePassenger` 官方 AJAX 提交，杜绝页面刷新清空已填乘客信息。
