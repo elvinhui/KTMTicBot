@@ -245,5 +245,29 @@ def test_sqlite_saved_passengers_crud(tmp_path):
     repo.clear_saved_passengers()
     assert len(repo.get_saved_passengers()) == 0
 
+def test_sqlite_passenger_ticket_type(tmp_path):
+    import sqlite3
+    db_path = tmp_path / "test_ticket_type.db"
+    repo = TaskRepository(str(db_path))
 
+    p1 = Passenger(name="TAN JIA HUI", id_number="960217075045", gender="Male", phone="01155814273", ticket_type="DEWASA/ADULT")
+    p2 = Passenger(name="Tan Ah Goh", id_number="670328085937", gender="Male", phone="01117031730", ticket_type="DEWASA/ADULT")
+    p3 = Passenger(name="Tan Siew Cheng", id_number="651219075218", gender="Female", phone="0123456789", ticket_type="DEWASA/ADULT")
+
+    repo.save_passenger(p1)
+    repo.save_passenger(p2)
+    repo.save_passenger(p3)
+
+    saved = repo.get_saved_passengers()
+    assert len(saved) == 3
+    for s in saved:
+        assert s.ticket_type == "DEWASA/ADULT"
+
+    # Also verify raw column in database
+    conn = sqlite3.connect(str(db_path))
+    rows = conn.execute("SELECT name, ticket_type FROM saved_passengers").fetchall()
+    conn.close()
+    assert len(rows) == 3
+    for r in rows:
+        assert r[1] == "DEWASA/ADULT"
 

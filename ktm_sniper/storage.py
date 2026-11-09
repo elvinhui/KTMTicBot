@@ -119,6 +119,7 @@ class TaskRepository:
                         phone_masked TEXT,
                         email TEXT,
                         email_masked TEXT,
+                        ticket_type TEXT DEFAULT 'DEWASA/ADULT',
                         created_at REAL,
                         updated_at REAL
                     )
@@ -126,6 +127,7 @@ class TaskRepository:
                 for col_name, col_type in [
                     ("phone_masked", "TEXT"),
                     ("email_masked", "TEXT"),
+                    ("ticket_type", "TEXT DEFAULT 'DEWASA/ADULT'"),
                 ]:
                     try:
                         conn.execute(f"ALTER TABLE saved_passengers ADD COLUMN {col_name} {col_type}")
@@ -216,6 +218,7 @@ class TaskRepository:
                 "gender": p.gender,
                 "phone": self._encrypt_field(p.phone),
                 "email": self._encrypt_field(p.email or ""),
+                "ticket_type": getattr(p, "ticket_type", None) or "DEWASA/ADULT",
             }
             for p in config.passengers
         ]
@@ -326,6 +329,7 @@ class TaskRepository:
         masked_phone = p.masked_phone
         encrypted_email = self._encrypt_field(p.email or "")
         masked_email = p.masked_email
+        ticket_type = getattr(p, "ticket_type", None) or "DEWASA/ADULT"
         now = time.time()
         conn = self._get_connection()
         try:
@@ -336,17 +340,17 @@ class TaskRepository:
                     conn.execute("""
                         UPDATE saved_passengers
                         SET id_number_encrypted = ?, id_number_masked = ?, gender = ?,
-                            phone = ?, phone_masked = ?, email = ?, email_masked = ?, updated_at = ?
+                            phone = ?, phone_masked = ?, email = ?, email_masked = ?, ticket_type = ?, updated_at = ?
                         WHERE id = ?
-                    """, (encrypted_id, masked_id, p.gender, encrypted_phone, masked_phone, encrypted_email, masked_email, now, row["id"]))
+                    """, (encrypted_id, masked_id, p.gender, encrypted_phone, masked_phone, encrypted_email, masked_email, ticket_type, now, row["id"]))
                 else:
                     conn.execute("""
                         INSERT INTO saved_passengers (
                             name, id_number_encrypted, id_number_masked, gender,
-                            phone, phone_masked, email, email_masked, created_at, updated_at
+                            phone, phone_masked, email, email_masked, ticket_type, created_at, updated_at
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (p.name, encrypted_id, masked_id, p.gender, encrypted_phone, masked_phone, encrypted_email, masked_email, now, now))
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (p.name, encrypted_id, masked_id, p.gender, encrypted_phone, masked_phone, encrypted_email, masked_email, ticket_type, now, now))
         finally:
             conn.close()
 
@@ -367,12 +371,15 @@ class TaskRepository:
                     decrypted_id = row["id_number_masked"]
                 decrypted_phone = self._decrypt_field(row["phone"])
                 decrypted_email = self._decrypt_field(row["email"] or "")
+                keys = row.keys()
+                t_type = row["ticket_type"] if "ticket_type" in keys and row["ticket_type"] else "DEWASA/ADULT"
                 passengers.append(Passenger(
                     name=row["name"],
                     id_number=decrypted_id,
                     gender=row["gender"],
                     phone=decrypted_phone,
-                    email=decrypted_email
+                    email=decrypted_email,
+                    ticket_type=t_type
                 ))
             return passengers
         finally:
@@ -488,12 +495,14 @@ class TaskRepository:
             id_val = self._decrypt_field(p.get("id_number", ""))
             phone_val = self._decrypt_field(p.get("phone", ""))
             email_val = self._decrypt_field(p.get("email", ""))
+            t_type = p.get("ticket_type") or "DEWASA/ADULT"
             passengers.append(Passenger(
                 name=p["name"],
                 id_number=id_val,
                 gender=p["gender"],
                 phone=phone_val,
-                email=email_val
+                email=email_val,
+                ticket_type=t_type
             ))
 
         # Extract optional round trip and insurance fields safely

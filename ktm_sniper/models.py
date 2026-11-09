@@ -18,6 +18,7 @@ class Passenger:
     gender: str
     phone: str
     email: Optional[str] = ""
+    ticket_type: Optional[str] = "DEWASA/ADULT"
 
     @property
     def masked_id(self) -> str:
@@ -47,11 +48,12 @@ class Passenger:
             "id_number": self.masked_id if mask_pii else self.id_number,
             "gender": self.gender,
             "phone": self.masked_phone if mask_pii else self.phone,
-            "email": self.masked_email if mask_pii else (self.email or "")
+            "email": self.masked_email if mask_pii else (self.email or ""),
+            "ticket_type": self.ticket_type or "DEWASA/ADULT"
         }
 
     def __repr__(self) -> str:
-        return f"Passenger(name='{self.name}', id_number='{self.masked_id}', gender='{self.gender}', phone='{self.masked_phone}')"
+        return f"Passenger(name='{self.name}', id_number='{self.masked_id}', gender='{self.gender}', phone='{self.masked_phone}', ticket_type='{self.ticket_type or 'DEWASA/ADULT'}')"
 
 @dataclass
 class TripInfo:

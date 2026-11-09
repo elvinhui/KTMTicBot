@@ -1367,6 +1367,7 @@ class KTMBrowserDriver:
                     "id": getattr(p, "id_number", p.get("id_number") if isinstance(p, dict) else ""),
                     "phone": getattr(p, "phone", p.get("phone") if isinstance(p, dict) else ""),
                     "gender": getattr(p, "gender", p.get("gender") if isinstance(p, dict) else "Male"),
+                    "ticket_type": getattr(p, "ticket_type", p.get("ticket_type") if isinstance(p, dict) else "DEWASA/ADULT") or "DEWASA/ADULT",
                 })
 
             # 1. First: fix data-ticket-index on .TicketData elements and match Friends & Family (PNR) / IsSelf
@@ -1482,36 +1483,50 @@ class KTMBrowserDriver:
                     });
                 }
 
-                // Explicitly select Adult on all Onward ticket type dropdowns
-                document.querySelectorAll('.OnwardTicketTypeId').forEach(sel => {
-                    let opt = Array.from(sel.options).find(o => /ADULT|DEWASA/i.test(o.text || o.value));
-                    if (!opt) {
-                        opt = Array.from(sel.options).find(o => o.value && !/OKU/i.test(o.text));
-                    }
-                    if (!opt) {
-                        opt = new Option("DEWASA/ADULT", "Adult", true, true);
-                        opt.setAttribute("data-ispnr", "True");
-                        sel.add(opt);
-                    }
-                    sel.value = opt.value || "Adult";
-                    sel.removeAttribute('disabled');
-                    sel.classList.remove('input-validation-error');
-                    if (window.jQuery) window.jQuery(sel).trigger('change');
-                });
+                // Explicitly select configured ticket type for each passenger leg
+                paxList.forEach((p, pIndex) => {
+                    const sec = document.querySelectorAll('.passenger-section')[pIndex];
+                    if (!sec) return;
+                    const prefType = (p.ticket_type || 'Adult').toLowerCase();
+                    const isChild = prefType.includes('child') || prefType.includes('kanak');
 
-                // Ensure ReturnTicketTypeId is also populated and selected
-                document.querySelectorAll('.ReturnTicketTypeId').forEach(sel => {
-                    if (!sel.value) {
-                        let opt = Array.from(sel.options).find(o => /ADULT|DEWASA/i.test(o.text || o.value));
+                    // Onward Ticket Type
+                    const onwardSel = sec.querySelector('.OnwardTicketTypeId');
+                    if (onwardSel) {
+                        let opt = Array.from(onwardSel.options).find(o => {
+                            const txt = (o.text || o.value || '').toLowerCase();
+                            return isChild ? (txt.includes('child') || txt.includes('kanak')) : (txt.includes('adult') || txt.includes('dewasa'));
+                        });
                         if (!opt) {
-                            opt = Array.from(sel.options).find(o => o.value && !/OKU/i.test(o.text));
+                            opt = Array.from(onwardSel.options).find(o => o.value && !/OKU/i.test(o.text));
                         }
-                        if (opt) {
-                            sel.value = opt.value;
+                        if (!opt) {
+                            opt = new Option(isChild ? "KANAK-KANAK/CHILD" : "DEWASA/ADULT", isChild ? "Child" : "Adult", true, true);
+                            opt.setAttribute("data-ispnr", "True");
+                            onwardSel.add(opt);
                         }
+                        onwardSel.value = opt.value || (isChild ? "Child" : "Adult");
+                        onwardSel.removeAttribute('disabled');
+                        onwardSel.classList.remove('input-validation-error');
+                        if (window.jQuery) window.jQuery(onwardSel).trigger('change');
                     }
-                    sel.classList.remove('input-validation-error');
-                    if (window.jQuery) window.jQuery(sel).trigger('change');
+
+                    // Return Ticket Type
+                    const returnSel = sec.querySelector('.ReturnTicketTypeId');
+                    if (returnSel) {
+                        if (!returnSel.value) {
+                            let opt = Array.from(returnSel.options).find(o => {
+                                const txt = (o.text || o.value || '').toLowerCase();
+                                return isChild ? (txt.includes('child') || txt.includes('kanak')) : (txt.includes('adult') || txt.includes('dewasa'));
+                            });
+                            if (!opt) {
+                                opt = Array.from(returnSel.options).find(o => o.value && !/OKU/i.test(o.text));
+                            }
+                            if (opt) returnSel.value = opt.value;
+                        }
+                        returnSel.classList.remove('input-validation-error');
+                        if (window.jQuery) window.jQuery(returnSel).trigger('change');
+                    }
                 });
 
                 // Clean all validation errors and tooltips
