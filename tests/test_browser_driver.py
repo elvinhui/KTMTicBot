@@ -98,10 +98,14 @@ def test_browser_driver_fill_and_submit_passenger_form_with_qr(tmp_path):
     mock_frame.locator.return_value = mock_matches
 
     # Simulate clicking DuitNow and Proceed buttons
-    mock_page.evaluate.side_effect = [
-        {"found": True, "id": "btnGoPaymentDuitNow"},  # click DuitNow
-        {"clicked": True, "text": "CLICK HERE TO PROCEED TO PAYMENT GATEWAY"}  # click Proceed
-    ]
+    def eval_side_effect(script, *args, **kwargs):
+        if "btnGoPaymentDuitNow" in script:
+            return {"found": True, "id": "btnGoPaymentDuitNow"}
+        if "btnProceedToPayment" in script:
+            return {"clicked": True, "text": "CLICK HERE TO PROCEED TO PAYMENT GATEWAY"}
+        return None
+
+    mock_page.evaluate.side_effect = eval_side_effect
 
     # Create dummy screenshot when mock_qr_elem.screenshot is called
     def fake_screenshot(path):
