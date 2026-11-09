@@ -1461,8 +1461,14 @@ class KTMBrowserDriver:
             logger.info(f"📝 乘车人 PNR 与基本信息匹配完成: {pnr_fill_result}")
 
             # Wait for KITS AJAX (GetPassengerPNRTicketTypeV4) to fetch ticket types
+            time.sleep(0.5)
             try:
-                self.page.wait_for_function("() => window.jQuery ? window.jQuery.active === 0 : true", timeout=6000)
+                self.page.wait_for_function("""() => {
+                    if (window.jQuery && window.jQuery.active > 0) return false;
+                    const loadingOpts = document.querySelectorAll('option[data-isloading="True"]');
+                    if (loadingOpts.length > 0) return false;
+                    return true;
+                }""", timeout=12000)
             except Exception:
                 time.sleep(2.0)
 
@@ -1475,8 +1481,9 @@ class KTMBrowserDriver:
                         });
                     });
                 }
-                // Ensure Adult option is present and selected
-                document.querySelectorAll('.TicketTypeId').forEach(sel => {
+
+                // Explicitly select Adult on all Onward ticket type dropdowns
+                document.querySelectorAll('.OnwardTicketTypeId').forEach(sel => {
                     let opt = Array.from(sel.options).find(o => /ADULT|DEWASA/i.test(o.text || o.value));
                     if (!opt) {
                         opt = Array.from(sel.options).find(o => o.value && !/OKU/i.test(o.text));
@@ -1488,6 +1495,21 @@ class KTMBrowserDriver:
                     }
                     sel.value = opt.value || "Adult";
                     sel.removeAttribute('disabled');
+                    sel.classList.remove('input-validation-error');
+                    if (window.jQuery) window.jQuery(sel).trigger('change');
+                });
+
+                // Ensure ReturnTicketTypeId is also populated and selected
+                document.querySelectorAll('.ReturnTicketTypeId').forEach(sel => {
+                    if (!sel.value) {
+                        let opt = Array.from(sel.options).find(o => /ADULT|DEWASA/i.test(o.text || o.value));
+                        if (!opt) {
+                            opt = Array.from(sel.options).find(o => o.value && !/OKU/i.test(o.text));
+                        }
+                        if (opt) {
+                            sel.value = opt.value;
+                        }
+                    }
                     sel.classList.remove('input-validation-error');
                     if (window.jQuery) window.jQuery(sel).trigger('change');
                 });
