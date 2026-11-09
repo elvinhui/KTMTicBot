@@ -620,10 +620,19 @@ class KTMBrowserDriver:
                             coaches['B'] = { window: [], aisle: [] };
                         }
 
+                        const isOku = (el) => {
+                            const s = ((el.getAttribute('src') || '') + ' ' +
+                                       (el.getAttribute('data-seat-icon') || '') + ' ' +
+                                       (el.getAttribute('title') || '') + ' ' +
+                                       (el.className || '') + ' ' +
+                                       (el.getAttribute('data-seat-data') || '')).toUpperCase();
+                            return s.includes('OKU') || s.includes('WHEELCHAIR');
+                        };
+
                         const icons = document.querySelectorAll('#seatSelect .selectable-icon');
                         icons.forEach(ic => {
                             const isSelected = ic.getAttribute('data-selected') === 'true';
-                            if (isSelected) return;
+                            if (isSelected || isOku(ic)) return;
                             const cLbl = ic.getAttribute('data-coach-label') || 'B';
                             const sNo = (ic.getAttribute('data-seat-no') || ic.getAttribute('title') || '').trim();
                             if (!sNo) return;
@@ -984,7 +993,15 @@ class KTMBrowserDriver:
                         if (m) activeCoach = m[1].toUpperCase();
                     }
 
-                    const allAvailable = () => Array.from(document.querySelectorAll('#seatSelect .selectable-icon[data-selected="false"]'));
+                    const isOku = (el) => {
+                        const s = ((el.getAttribute('src') || '') + ' ' +
+                                   (el.getAttribute('data-seat-icon') || '') + ' ' +
+                                   (el.getAttribute('title') || '') + ' ' +
+                                   (el.className || '') + ' ' +
+                                   (el.getAttribute('data-seat-data') || '')).toUpperCase();
+                        return s.includes('OKU') || s.includes('WHEELCHAIR');
+                    };
+                    const allAvailable = () => Array.from(document.querySelectorAll('#seatSelect .selectable-icon[data-selected="false"]')).filter(el => !isOku(el));
                     const getSeatNo = (el) => (el.getAttribute('data-seat-no') || el.getAttribute('title') || el.innerText || '').trim().toUpperCase();
                     const getCoachLbl = (el) => (el.getAttribute('data-coach-label') || activeCoach || '').trim().toUpperCase();
 
@@ -1111,6 +1128,9 @@ class KTMBrowserDriver:
 
             if not target_seat_no or target_seat_no.strip() == "-":
                 raise RuntimeError("未能选定车次可用席位（可能席位已售罄）")
+            selected_out_seats = [s.strip() for s in target_seat_no.split(',') if s.strip() and s.strip() != '-']
+            if len(selected_out_seats) < target_count:
+                raise RuntimeError(f"未能选齐全部去程席位（需要 {target_count} 席，仅能选到 {len(selected_out_seats)} 席，可能余票不足）")
 
             logger.info(f"💺 已选定座位: {target_seat_no} (席位数: {target_count}, 偏好/指定: {pref})")
 
@@ -1223,6 +1243,9 @@ class KTMBrowserDriver:
                     except Exception:
                         pass
 
+                    selected_ret_seats = [s.strip() for s in return_target_seat_no.split(',') if s.strip() and s.strip() != '-']
+                    if len(selected_ret_seats) < target_count:
+                        raise RuntimeError(f"未能选齐全部返程席位（需要 {target_count} 席，仅能选到 {len(selected_ret_seats)} 席，可能返程余票不足）")
                     self.last_return_trip_info["selected_seat"] = return_target_seat_no
                     logger.info(f"💺 返程车次已选定座位: {return_target_seat_no}")
 
@@ -1429,8 +1452,11 @@ class KTMBrowserDriver:
             }""", pax_payload)
             logger.info(f"📝 乘车人 PNR 与基本信息匹配完成: {pnr_fill_result}")
 
-            # Wait briefly for KITS AJAX (GetPassengerPNRTicketTypeV4) to fetch ticket types
-            time.sleep(2.5)
+            # Wait for KITS AJAX (GetPassengerPNRTicketTypeV4) to fetch ticket types
+            try:
+                self.page.wait_for_function("() => window.jQuery ? window.jQuery.active === 0 : true", timeout=6000)
+            except Exception:
+                time.sleep(2.0)
 
             # 2. Re-verify .TicketData data-ticket-index and select Adult for all legs
             fill_result = self.page.evaluate("""(paxList) => {
@@ -1465,6 +1491,16 @@ class KTMBrowserDriver:
                 document.querySelectorAll('.tooltip, .tooltipValidation, .field-validation-error').forEach(el => el.remove());
                 document.querySelectorAll('.input-validation-error').forEach(el => el.classList.remove('input-validation-error'));
 
+                // Intercept UpdatePassengerV4 response to detect validation errors
+                window.__lastUpdatePassengerResponse = null;
+                if (window.jQuery) {
+                    window.jQuery(document).off('ajaxComplete.paxSubmit').on('ajaxComplete.paxSubmit', function(e, xhr, settings) {
+                        if (settings.url && settings.url.includes('UpdatePassengerV4')) {
+                            try { window.__lastUpdatePassengerResponse = JSON.parse(xhr.responseText); } catch (err) {}
+                        }
+                    });
+                }
+
                 // Call UpdatePassenger or click #btnConfirmPayment
                 try {
                     if (typeof UpdatePassenger === 'function') {
@@ -1488,19 +1524,20 @@ class KTMBrowserDriver:
             except Exception:
                 pass
 
-            # If still on /Book, check if #frmPassenger needs a manual submit trigger
+            # If still on /Book, check if UpdatePassenger was rejected by KITS
             if "/Book" in (self.page.url or ""):
+                alert_text = self._collect_page_alert_text()
+                pax_res = None
                 try:
-                    self.dismiss_popup_alerts()
-                    self.page.evaluate("""() => {
-                        const frm = document.querySelector('#frmPassenger');
-                        if (frm && frm.BookingData && frm.BookingData.value) {
-                            frm.submit();
-                        }
-                    }""")
-                    time.sleep(2.0)
+                    pax_res = self.page.evaluate("() => window.__lastUpdatePassengerResponse")
                 except Exception:
                     pass
+                msg = ""
+                if pax_res and isinstance(pax_res, dict) and not pax_res.get("status"):
+                    msg = ", ".join(pax_res.get("messages") or [])
+                err_detail = msg or alert_text or "乘车人页面提交超时（可能数据校验未通过或座位已失效）"
+                logger.error(f"❌ 乘车人表单提交后未能推进到支付页面: {err_detail}")
+                raise RuntimeError(f"乘车人表单提交失败: {err_detail}")
 
             # Step 2: Handle Takaful Insurance page
             include_insurance = bool(getattr(task, "include_insurance", False)) if task else False

@@ -152,7 +152,8 @@ class SniperTaskConfig:
 
     def matches_trip(self, trip: TripInfo) -> bool:
         # Check seat capacity
-        if trip.available_seats < self.required_seats:
+        target_seats = max(self.required_seats, len(self.passengers)) if self.passengers else self.required_seats
+        if trip.available_seats < target_seats:
             return False
 
         # Check departure time window
