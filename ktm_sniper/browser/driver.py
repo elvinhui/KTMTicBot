@@ -1287,7 +1287,7 @@ class KTMBrowserDriver:
             )
             try:
                 if not final_locked_seat or "Coach" not in final_locked_seat:
-                    book_page_seats = self.page.evaluate("""
+                    book_page_seats = self.page.evaluate(r"""
                         () => {
                             const text = document.body ? document.body.innerText : '';
                             const regex = /-\s*([A-Z0-9]{1,3})\s*\/\s*([0-9]{1,2}[A-Z])\b/g;
@@ -1318,173 +1318,103 @@ class KTMBrowserDriver:
         Returns dict with status, official booking_id, and payment_url.
         """
         try:
-            self.page.wait_for_selector("#Passengers_0__FullName, input.FullName", timeout=10000)
+            self.page.wait_for_selector("#Passengers_0__FullName, input.FullName, #theForm", timeout=10000)
 
-            # 0. Smart auto-select from Friends & Family (PNR) and "I am travelling"
-            try:
-                for idx, p in enumerate(passengers):
-                    p_name = getattr(p, "name", p.get("name") if isinstance(p, dict) else "").strip().upper()
-                    if idx == 0:
-                        self_cb = self.page.locator("#Passengers_0__IsSelf").first
-                        if self_cb.count() > 0:
-                            try:
-                                if not self_cb.is_checked():
-                                    self_cb.click(timeout=1000)
-                            except Exception:
-                                pass
+            pax_payload = []
+            for p in passengers:
+                pax_payload.append({
+                    "name": getattr(p, "name", p.get("name") if isinstance(p, dict) else ""),
+                    "id": getattr(p, "id_number", p.get("id_number") if isinstance(p, dict) else ""),
+                    "phone": getattr(p, "phone", p.get("phone") if isinstance(p, dict) else ""),
+                    "gender": getattr(p, "gender", p.get("gender") if isinstance(p, dict) else "Male"),
+                })
 
-                    pnr_sel = self.page.locator(f"#PNRSelect_{idx}").first
-                    if pnr_sel.count() > 0:
-                        try:
-                            self.page.evaluate(
-                                """({ idx, name }) => {
-                                    const sel = document.querySelector('#PNRSelect_' + idx);
-                                    if (!sel) return;
-                                    const opt = Array.from(sel.options).find(o => {
-                                        const t = (o.text || '').toUpperCase();
-                                        return t && (t.includes(name) || name.includes(t));
-                                    });
-                                    if (opt && opt.value) {
-                                        sel.value = opt.value;
-                                        if (window.jQuery) window.jQuery(sel).trigger('change');
-                                    }
-                                }""",
-                                {"idx": idx, "name": p_name}
-                            )
-                        except Exception:
-                            pass
-                time.sleep(1.0)
-            except Exception as e:
-                logger.warning(f"触发常用联系人选择异常: {e}")
+            # 1. Fill all fields, set TicketTypeId to Adult, and submit via UpdatePassenger()
+            logger.info(f"📝 正在填报 {len(pax_payload)} 位乘车人信息并选定车票类型 (Adult)...")
+            fill_result = self.page.evaluate("""(paxList) => {
+                for (let idx = 0; idx < paxList.length; idx++) {
+                    const p = paxList[idx];
+                    const sec = document.querySelectorAll('.passenger-section')[idx];
+                    if (!sec) continue;
 
-            # 1. Fill or verify text inputs for each passenger
-            for idx, p in enumerate(passengers):
-                p_name = getattr(p, "name", p.get("name") if isinstance(p, dict) else "")
-                p_id = getattr(p, "id_number", p.get("id_number") if isinstance(p, dict) else "")
-                p_phone = getattr(p, "phone", p.get("phone") if isinstance(p, dict) else "")
-                p_gender = getattr(p, "gender", p.get("gender") if isinstance(p, dict) else "Male")
-
-                name_input = self.page.locator(f"#Passengers_{idx}__FullName").first
-                if name_input.count() == 0:
-                    name_input = self.page.locator("input.FullName").nth(idx)
-                if name_input.count() > 0:
-                    try:
-                        cur_val = name_input.input_value()
-                    except Exception:
-                        cur_val = ""
-                    if not cur_val or not cur_val.strip():
-                        name_input.fill(p_name)
-
-                id_input = self.page.locator(f"#Passengers_{idx}__IdentityNo").first
-                if id_input.count() == 0:
-                    id_input = self.page.locator("input.IdentityNo").nth(idx)
-                if id_input.count() > 0:
-                    try:
-                        cur_id = id_input.input_value()
-                    except Exception:
-                        cur_id = ""
-                    if not cur_id or not cur_id.strip():
-                        id_input.fill(p_id)
-
-                phone_input = self.page.locator(f"#Passengers_{idx}__ContactNo").first
-                if phone_input.count() == 0:
-                    phone_input = self.page.locator("input.ContactNo").nth(idx)
-                if phone_input.count() > 0:
-                    try:
-                        cur_phone = phone_input.input_value()
-                    except Exception:
-                        cur_phone = ""
-                    if not cur_phone or not cur_phone.strip():
-                        phone_input.fill(p_phone)
-
-                if str(p_gender).lower() in ("female", "f", "女"):
-                    try:
-                        self.page.locator(f"#Passengers_{idx}__GenderFemale").first.click(timeout=1000)
-                    except Exception:
-                        pass
-                else:
-                    try:
-                        self.page.locator(f"#Passengers_{idx}__GenderMale").first.click(timeout=1000)
-                    except Exception:
-                        pass
-
-                # Select TicketTypeId for each leg (0: Onward, 1: Return)
-                for leg_idx in (0, 1):
-                    ticket_sel = self.page.locator(f"#Passengers_{idx}__Tickets_{leg_idx}__TicketTypeId").first
-                    if ticket_sel.count() > 0:
-                        try:
-                            ticket_sel.select_option("Adult", timeout=1000)
-                        except Exception:
-                            try:
-                                ticket_sel.select_option(label="DEWASA/ADULT", timeout=1000)
-                            except Exception:
-                                pass
-
-            # 2. Force valid TicketTypeId selection for every passenger and leg, clearing validation errors
-            try:
-                self.page.evaluate("""(paxCount) => {
-                    for (let idx = 0; idx < paxCount; idx++) {
-                        for (let leg = 0; leg < 2; leg++) {
-                            const sel = document.querySelector('#Passengers_' + idx + '__Tickets_' + leg + '__TicketTypeId');
-                            if (!sel) continue;
-
-                            let opt = Array.from(sel.options).find(o => /ADULT|DEWASA/i.test(o.text || o.value));
-                            if (!opt) {
-                                opt = Array.from(sel.options).find(o => o.value && !/OKU/i.test(o.text));
-                            }
-                            if (!opt) {
-                                opt = new Option("DEWASA/ADULT", "Adult", true, true);
-                                opt.setAttribute("data-ispnr", "True");
-                                sel.add(opt);
-                            }
-                            sel.value = opt.value || "Adult";
-                            sel.removeAttribute("disabled");
-                            sel.classList.remove("input-validation-error");
-                            if (window.jQuery) {
-                                try { window.jQuery(sel).trigger("change"); } catch (e) {}
-                            }
-                        }
+                    const nameInput = sec.querySelector('input.FullName, #Passengers_' + idx + '__FullName');
+                    if (nameInput) {
+                        nameInput.removeAttribute('disabled');
+                        nameInput.removeAttribute('readonly');
+                        nameInput.value = p.name;
                     }
-                    document.querySelectorAll('.tooltip, .tooltipValidation, .field-validation-error').forEach(el => el.remove());
-                    document.querySelectorAll('.input-validation-error').forEach(el => el.classList.remove('input-validation-error'));
-                }""", len(passengers))
-            except Exception as e:
-                logger.warning(f"设置乘客票种异常: {e}")
 
-            # Step 1: Submit passenger details
-            logger.info("📝 正在提交乘车人信息...")
-            btn_confirm = self.page.locator(
-                "#btnConfirmPayment, button:has-text('PROCEED TO PAYMENT'):not(#btnUpdateInsuranceYes):not(#btnUpdateInsuranceNo)"
-            ).last
-            if btn_confirm.count() > 0:
-                try:
-                    btn_confirm.scroll_into_view_if_needed(timeout=2000)
-                    btn_confirm.click(timeout=5000)
-                except Exception:
-                    btn_confirm.evaluate("el => el.click()")
-            time.sleep(2.5)
+                    const idInput = sec.querySelector('input.IdentityNo, #Passengers_' + idx + '__IdentityNo');
+                    if (idInput) {
+                        idInput.removeAttribute('disabled');
+                        idInput.removeAttribute('readonly');
+                        idInput.value = p.id;
+                    }
 
-            # Check for any validation popup or step1 alert
+                    const phoneInput = sec.querySelector('input.ContactNo, #Passengers_' + idx + '__ContactNo');
+                    if (phoneInput) {
+                        phoneInput.removeAttribute('disabled');
+                        phoneInput.removeAttribute('readonly');
+                        phoneInput.value = p.phone;
+                    }
+
+                    const isFemale = (p.gender || '').toLowerCase().startsWith('f');
+                    const gMale = sec.querySelector('#Passengers_' + idx + '__GenderMale, input.Gender[value="Male"]');
+                    const gFemale = sec.querySelector('#Passengers_' + idx + '__GenderFemale, input.Gender[value="Female"]');
+                    if (isFemale && gFemale) { gFemale.checked = true; }
+                    else if (gMale) { gMale.checked = true; }
+
+                    // Set TicketTypeId on every select
+                    const ticketSelects = sec.querySelectorAll('.TicketTypeId, select[id*="TicketTypeId"]');
+                    ticketSelects.forEach(sel => {
+                        let opt = Array.from(sel.options).find(o => /ADULT|DEWASA/i.test(o.text || o.value));
+                        if (!opt) {
+                            opt = Array.from(sel.options).find(o => o.value && !/OKU/i.test(o.text));
+                        }
+                        if (!opt) {
+                            opt = new Option("DEWASA/ADULT", "Adult", true, true);
+                            opt.setAttribute("data-ispnr", "True");
+                            sel.add(opt);
+                        }
+                        sel.value = opt.value || "Adult";
+                        sel.removeAttribute('disabled');
+                        sel.classList.remove('input-validation-error');
+                    });
+                }
+
+                // Clean all validation errors and tooltips
+                if (window.jQuery && window.jQuery('#theForm').length) {
+                    try { window.jQuery('#theForm').validate().resetForm(); } catch (e) {}
+                }
+                document.querySelectorAll('.tooltip, .tooltipValidation, .field-validation-error').forEach(el => el.remove());
+                document.querySelectorAll('.input-validation-error').forEach(el => el.classList.remove('input-validation-error'));
+
+                // Call window.UpdatePassenger() directly
+                if (typeof window.UpdatePassenger === 'function') {
+                    try {
+                        window.UpdatePassenger();
+                        return { submitted: true, method: 'UpdatePassenger' };
+                    } catch (e) {
+                        return { submitted: false, error: String(e) };
+                    }
+                }
+                const btn = document.querySelector('#btnConfirmPayment');
+                if (btn) {
+                    btn.click();
+                    return { submitted: true, method: 'btnConfirmPayment' };
+                }
+                return { submitted: false, method: 'none' };
+            }""", pax_payload)
+            logger.info(f"📝 乘车人表单提交执行状态: {fill_result}")
+            time.sleep(3.0)
+
+            # Check if popup modal alert appeared
             self.dismiss_popup_alerts()
-            popup_ok_step1 = self.page.locator("#popupModal.show #popupModalOkButton, #popupModal.show button:has-text('OK')").first
-            if popup_ok_step1.count() > 0 and popup_ok_step1.is_visible():
+            popup_ok = self.page.locator("#popupModal.show #popupModalOkButton, #popupModal.show button:has-text('OK')").first
+            if popup_ok.count() > 0 and popup_ok.is_visible():
                 try:
-                    popup_ok_step1.evaluate("el => el.click()")
+                    popup_ok.evaluate("el => el.click()")
                     time.sleep(1.5)
-                except Exception:
-                    pass
-
-            # If still on /Book, retry proceed once with cleaned validation tooltips
-            if "/Book" in (self.page.url or ""):
-                try:
-                    self.page.evaluate("""() => {
-                        document.querySelectorAll('.tooltip, .tooltipValidation, .field-validation-error').forEach(el => el.remove());
-                        document.querySelectorAll('.input-validation-error').forEach(el => el.classList.remove('input-validation-error'));
-                    }""")
-                    btn_retry = self.page.locator("#btnConfirmPayment, button:has-text('PROCEED TO PAYMENT'):not(#btnUpdateInsuranceYes):not(#btnUpdateInsuranceNo)").last
-                    if btn_retry.count() > 0:
-                        btn_retry.evaluate("el => el.click()")
-                    time.sleep(2.0)
                 except Exception:
                     pass
 
@@ -1508,7 +1438,8 @@ class KTMBrowserDriver:
                 except Exception:
                     pass
 
-            takaful_proceed = self.page.locator("#btnUpdateInsuranceYes, button:has-text('PROCEED TO PAYMENT')").last
+            # Only match specific insurance button
+            takaful_proceed = self.page.locator("#btnUpdateInsuranceYes, #btnUpdateInsuranceNo").first
             if takaful_proceed.count() > 0 and takaful_proceed.is_visible():
                 logger.info(f"🛡️ 正在处理 Takaful 保险确认 (购买保险={include_insurance})...")
                 try:
@@ -1544,10 +1475,10 @@ class KTMBrowserDriver:
                     break
                 time.sleep(0.3)
 
-            # Step 3: Handle Confirmation & Meals page (exclude already-clicked #btnUpdateInsuranceYes / #btnConfirmPayment)
+            # Step 3: Handle Confirmation & Meals page
             final_pay = self.page.locator(
-                "button:has-text('PROCEED TO PAYMENT'):not(#btnUpdateInsuranceYes):not(#btnUpdateInsuranceNo):not(#btnConfirmPayment), "
-                "a:has-text('PROCEED TO PAYMENT'):not(#btnUpdateInsuranceYes):not(#btnUpdateInsuranceNo):not(#btnConfirmPayment)"
+                "button:has-text('PROCEED TO PAYMENT'):not(#btnConfirmPayment):not(#btnUpdateInsuranceYes):not(#btnUpdateInsuranceNo), "
+                "a:has-text('PROCEED TO PAYMENT'):not(#btnConfirmPayment):not(#btnUpdateInsuranceYes):not(#btnUpdateInsuranceNo)"
             ).last
             if final_pay.count() > 0 and final_pay.is_visible():
                 logger.info("🍽️ 正在处理餐食确认并提交订单...")
