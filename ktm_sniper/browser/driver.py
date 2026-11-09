@@ -1343,58 +1343,120 @@ class KTMBrowserDriver:
                     "gender": getattr(p, "gender", p.get("gender") if isinstance(p, dict) else "Male"),
                 })
 
-            # 1. Fill all fields, set TicketTypeId to Adult, and submit via UpdatePassenger()
+            # 1. First: fix data-ticket-index on .TicketData elements and match Friends & Family (PNR) / IsSelf
             logger.info(f"📝 正在填报 {len(pax_payload)} 位乘车人信息并选定车票类型 (Adult)...")
-            fill_result = self.page.evaluate("""(paxList) => {
-                for (let idx = 0; idx < paxList.length; idx++) {
-                    const p = paxList[idx];
-                    const sec = document.querySelectorAll('.passenger-section')[idx];
-                    if (!sec) continue;
-
-                    const nameInput = sec.querySelector('input.FullName, #Passengers_' + idx + '__FullName');
-                    if (nameInput) {
-                        nameInput.removeAttribute('disabled');
-                        nameInput.removeAttribute('readonly');
-                        nameInput.value = p.name;
-                    }
-
-                    const idInput = sec.querySelector('input.IdentityNo, #Passengers_' + idx + '__IdentityNo');
-                    if (idInput) {
-                        idInput.removeAttribute('disabled');
-                        idInput.removeAttribute('readonly');
-                        idInput.value = p.id;
-                    }
-
-                    const phoneInput = sec.querySelector('input.ContactNo, #Passengers_' + idx + '__ContactNo');
-                    if (phoneInput) {
-                        phoneInput.removeAttribute('disabled');
-                        phoneInput.removeAttribute('readonly');
-                        phoneInput.value = p.phone;
-                    }
-
-                    const isFemale = (p.gender || '').toLowerCase().startsWith('f');
-                    const gMale = sec.querySelector('#Passengers_' + idx + '__GenderMale, input.Gender[value="Male"]');
-                    const gFemale = sec.querySelector('#Passengers_' + idx + '__GenderFemale, input.Gender[value="Female"]');
-                    if (isFemale && gFemale) { gFemale.checked = true; }
-                    else if (gMale) { gMale.checked = true; }
-
-                    // Set TicketTypeId on every select
-                    const ticketSelects = sec.querySelectorAll('.TicketTypeId, select[id*="TicketTypeId"]');
-                    ticketSelects.forEach(sel => {
-                        let opt = Array.from(sel.options).find(o => /ADULT|DEWASA/i.test(o.text || o.value));
-                        if (!opt) {
-                            opt = Array.from(sel.options).find(o => o.value && !/OKU/i.test(o.text));
-                        }
-                        if (!opt) {
-                            opt = new Option("DEWASA/ADULT", "Adult", true, true);
-                            opt.setAttribute("data-ispnr", "True");
-                            sel.add(opt);
-                        }
-                        sel.value = opt.value || "Adult";
-                        sel.removeAttribute('disabled');
-                        sel.classList.remove('input-validation-error');
+            pnr_fill_result = self.page.evaluate("""(paxList) => {
+                // Fix KITS bug: ensure each .TicketData in each section has data-ticket-index matching its leg (0, 1)
+                if (window.jQuery) {
+                    window.jQuery('.passenger-section').each(function(pIndex, pEl) {
+                        window.jQuery(pEl).find('.TicketData').each(function(tIndex, tEl) {
+                            window.jQuery(tEl).attr('data-ticket-index', tIndex);
+                        });
+                    });
+                } else {
+                    document.querySelectorAll('.passenger-section').forEach(sec => {
+                        sec.querySelectorAll('.TicketData').forEach((el, tIndex) => {
+                            el.setAttribute('data-ticket-index', String(tIndex));
+                        });
                     });
                 }
+
+                const actions = [];
+                // Check if passenger 0 can use IsSelf
+                const selfBox = document.querySelector('#Passengers_0__IsSelf');
+                let selfChecked = false;
+                if (selfBox && !selfBox.checked) {
+                    selfBox.click();
+                    selfChecked = true;
+                    actions.push('Passenger 0 checked IsSelf');
+                }
+
+                // Match remaining passengers against PNRSelect dropdowns
+                for (let idx = (selfChecked ? 1 : 0); idx < paxList.length; idx++) {
+                    const p = paxList[idx];
+                    const targetName = (p.name || '').trim().toLowerCase();
+                    const pnrSel = document.querySelector('#PNRSelect_' + idx);
+                    let matched = false;
+                    if (pnrSel && targetName) {
+                        for (let opt of pnrSel.options) {
+                            const optText = (opt.text || '').trim().toLowerCase();
+                            if (optText && (targetName.includes(optText) || optText.includes(targetName))) {
+                                pnrSel.value = opt.value;
+                                if (window.jQuery) {
+                                    window.jQuery(pnrSel).val(opt.value).trigger('change');
+                                } else {
+                                    pnrSel.dispatchEvent(new Event('change', { bubbles: true }));
+                                }
+                                matched = true;
+                                actions.push(`Passenger ${idx} selected PNR: ${opt.text}`);
+                                break;
+                            }
+                        }
+                    }
+
+                    // Fallback to manual fill if PNR not matched
+                    if (!matched) {
+                        const sec = document.querySelectorAll('.passenger-section')[idx];
+                        if (sec) {
+                            const nameInput = sec.querySelector('input.FullName, #Passengers_' + idx + '__FullName');
+                            if (nameInput) {
+                                nameInput.removeAttribute('disabled');
+                                nameInput.removeAttribute('readonly');
+                                nameInput.value = p.name;
+                            }
+                            const idInput = sec.querySelector('input.IdentityNo, #Passengers_' + idx + '__IdentityNo');
+                            if (idInput) {
+                                idInput.removeAttribute('disabled');
+                                idInput.removeAttribute('readonly');
+                                idInput.value = p.id;
+                            }
+                            const phoneInput = sec.querySelector('input.ContactNo, #Passengers_' + idx + '__ContactNo');
+                            if (phoneInput) {
+                                phoneInput.removeAttribute('disabled');
+                                phoneInput.removeAttribute('readonly');
+                                phoneInput.value = p.phone;
+                            }
+                            const isFemale = (p.gender || '').toLowerCase().startsWith('f');
+                            const gMale = sec.querySelector('#Passengers_' + idx + '__GenderMale, input.Gender[value="Male"], input.Gender[value="M"]');
+                            const gFemale = sec.querySelector('#Passengers_' + idx + '__GenderFemale, input.Gender[value="Female"], input.Gender[value="F"]');
+                            if (isFemale && gFemale) { gFemale.checked = true; }
+                            else if (gMale) { gMale.checked = true; }
+                            actions.push(`Passenger ${idx} manually filled`);
+                        }
+                    }
+                }
+                return actions;
+            }""", pax_payload)
+            logger.info(f"📝 乘车人 PNR 与基本信息匹配完成: {pnr_fill_result}")
+
+            # Wait briefly for KITS AJAX (GetPassengerPNRTicketTypeV4) to fetch ticket types
+            time.sleep(2.5)
+
+            # 2. Re-verify .TicketData data-ticket-index and select Adult for all legs
+            fill_result = self.page.evaluate("""(paxList) => {
+                if (window.jQuery) {
+                    window.jQuery('.passenger-section').each(function(pIndex, pEl) {
+                        window.jQuery(pEl).find('.TicketData').each(function(tIndex, tEl) {
+                            window.jQuery(tEl).attr('data-ticket-index', tIndex);
+                        });
+                    });
+                }
+                // Ensure Adult option is present and selected
+                document.querySelectorAll('.TicketTypeId').forEach(sel => {
+                    let opt = Array.from(sel.options).find(o => /ADULT|DEWASA/i.test(o.text || o.value));
+                    if (!opt) {
+                        opt = Array.from(sel.options).find(o => o.value && !/OKU/i.test(o.text));
+                    }
+                    if (!opt) {
+                        opt = new Option("DEWASA/ADULT", "Adult", true, true);
+                        opt.setAttribute("data-ispnr", "True");
+                        sel.add(opt);
+                    }
+                    sel.value = opt.value || "Adult";
+                    sel.removeAttribute('disabled');
+                    sel.classList.remove('input-validation-error');
+                    if (window.jQuery) window.jQuery(sel).trigger('change');
+                });
 
                 // Clean all validation errors and tooltips
                 if (window.jQuery && window.jQuery('#theForm').length) {
@@ -1403,15 +1465,14 @@ class KTMBrowserDriver:
                 document.querySelectorAll('.tooltip, .tooltipValidation, .field-validation-error').forEach(el => el.remove());
                 document.querySelectorAll('.input-validation-error').forEach(el => el.classList.remove('input-validation-error'));
 
-                // Call window.UpdatePassenger() directly
-                if (typeof window.UpdatePassenger === 'function') {
-                    try {
-                        window.UpdatePassenger();
+                // Call UpdatePassenger or click #btnConfirmPayment
+                try {
+                    if (typeof UpdatePassenger === 'function') {
+                        UpdatePassenger();
                         return { submitted: true, method: 'UpdatePassenger' };
-                    } catch (e) {
-                        return { submitted: false, error: String(e) };
                     }
-                }
+                } catch (e) {}
+
                 const btn = document.querySelector('#btnConfirmPayment');
                 if (btn) {
                     btn.click();
@@ -1420,15 +1481,24 @@ class KTMBrowserDriver:
                 return { submitted: false, method: 'none' };
             }""", pax_payload)
             logger.info(f"📝 乘车人表单提交执行状态: {fill_result}")
-            time.sleep(3.0)
 
-            # Check if popup modal alert appeared
-            self.dismiss_popup_alerts()
-            popup_ok = self.page.locator("#popupModal.show #popupModalOkButton, #popupModal.show button:has-text('OK')").first
-            if popup_ok.count() > 0 and popup_ok.is_visible():
+            # 3. Wait for page transition away from /Book to insurance or payment
+            try:
+                self.page.wait_for_url(lambda u: "/Book" not in u or "Payment" in u or "Checkout" in u, timeout=20000)
+            except Exception:
+                pass
+
+            # If still on /Book, check if #frmPassenger needs a manual submit trigger
+            if "/Book" in (self.page.url or ""):
                 try:
-                    popup_ok.evaluate("el => el.click()")
-                    time.sleep(1.5)
+                    self.dismiss_popup_alerts()
+                    self.page.evaluate("""() => {
+                        const frm = document.querySelector('#frmPassenger');
+                        if (frm && frm.BookingData && frm.BookingData.value) {
+                            frm.submit();
+                        }
+                    }""")
+                    time.sleep(2.0)
                 except Exception:
                     pass
 
@@ -1453,6 +1523,12 @@ class KTMBrowserDriver:
                     pass
 
             # Only match specific insurance button
+            try:
+                takaful_btn_sel = "#btnUpdateInsuranceYes" if include_insurance else "#btnUpdateInsuranceNo"
+                self.page.wait_for_selector(f"{takaful_btn_sel}, #btnUpdateInsuranceYes, #btnUpdateInsuranceNo", timeout=4000)
+            except Exception:
+                pass
+
             takaful_proceed = self.page.locator("#btnUpdateInsuranceYes, #btnUpdateInsuranceNo").first
             if takaful_proceed.count() > 0 and takaful_proceed.is_visible():
                 logger.info(f"🛡️ 正在处理 Takaful 保险确认 (购买保险={include_insurance})...")
@@ -1517,6 +1593,12 @@ class KTMBrowserDriver:
                     except Exception:
                         pass
                 time.sleep(2.5)
+
+            # Wait for checkout page
+            try:
+                self.page.wait_for_url("**/Payment/Checkout**", timeout=15000)
+            except Exception:
+                pass
 
             try:
                 self.page.wait_for_load_state("networkidle", timeout=15000)
