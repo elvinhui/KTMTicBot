@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 import logging
 import time
@@ -432,6 +433,111 @@ class KTMBrowserDriver:
         except Exception:
             return False
 
+    @staticmethod
+    def _get_fallback_layout() -> Dict[str, Dict[str, List[str]]]:
+        return {
+            "B": {
+                "window": ["03A", "03D", "04A", "04D", "05A", "05D"],
+                "aisle":  ["03B", "03C", "04B", "04C", "05B", "05C"]
+            },
+            "C": {
+                "window": ["02A", "02D", "06A", "06D"],
+                "aisle":  ["02B", "02C", "06B", "06C"]
+            }
+        }
+
+    def _open_seat_modal_for_trip(self, tbody_cls: str, train_no: Optional[str] = None) -> bool:
+        """
+        Locates the specific trip row in `tbody_cls` (depart or return) and clicks its 'Pick Seats'
+        anchor/button, waiting for KITS to fetch seats via AJAX and display the #seatSelect modal.
+        Does NOT force-show the modal via jQuery/Bootstrap to avoid unpopulated seat layouts.
+        """
+        self.dismiss_modals()
+        self.dismiss_popup_alerts()
+
+        raw_train = str(train_no or "").strip()
+        clean_train = re.sub(r"[^0-9]", "", raw_train)
+
+        # 1. Attempt JS trigger directly on DOM button/anchor
+        try:
+            clicked = bool(self.page.evaluate(
+                """({ tbodyCls, rawTrain, cleanTrain }) => {
+                    const tbody = document.querySelector(tbodyCls);
+                    if (!tbody) return false;
+                    const rows = Array.from(tbody.querySelectorAll('tr:not(.disabled)'));
+                    if (rows.length === 0) return false;
+
+                    let targetRow = null;
+                    if (rawTrain || cleanTrain) {
+                        targetRow = rows.find(r => {
+                            const text = (r.innerText || '').toUpperCase();
+                            if (rawTrain && text.includes(rawTrain.toUpperCase())) return true;
+                            if (cleanTrain && text.replace(/[^0-9]/g, '').includes(cleanTrain)) return true;
+                            return false;
+                        });
+                    }
+                    if (!targetRow) targetRow = rows[0];
+                    if (!targetRow) return false;
+
+                    const btn = targetRow.querySelector('.btn-seat-layout, a.select-btn, [data-tripdata], a, button');
+                    if (!btn) return false;
+
+                    try { btn.scrollIntoView({ block: 'center', behavior: 'instant' }); } catch (e) {}
+                    btn.click();
+                    return true;
+                }""",
+                {"tbodyCls": tbody_cls, "rawTrain": raw_train, "cleanTrain": clean_train}
+            ))
+        except Exception as e:
+            logger.warning(f"JS 触发选座按钮失败: {e}")
+
+        # 2. Wait for #seatSelect modal to become visible
+        modal_opened = False
+        try:
+            self.page.wait_for_selector("#seatSelect", state="visible", timeout=6000)
+            modal_opened = True
+        except Exception:
+            modal_opened = False
+
+        # 3. If modal didn't open, retry with Playwright native locator click
+        if not modal_opened:
+            try:
+                self.dismiss_popup_alerts()
+                loc = None
+                if clean_train:
+                    loc = self.page.locator(
+                        f"{tbody_cls} tr:has-text('{clean_train}') .btn-seat-layout, "
+                        f"{tbody_cls} tr:has-text('{clean_train}') [data-tripdata], "
+                        f"{tbody_cls} tr:has-text('{clean_train}') a:has-text('Pick Seats')"
+                    ).first
+                if not loc or loc.count() == 0:
+                    loc = self.page.locator(
+                        f"{tbody_cls} tr .btn-seat-layout, "
+                        f"{tbody_cls} tr [data-tripdata], "
+                        f"{tbody_cls} tr a:has-text('Pick Seats')"
+                    ).first
+
+                if loc and loc.count() > 0:
+                    try:
+                        loc.scroll_into_view_if_needed(timeout=2000)
+                    except Exception:
+                        pass
+                    loc.click(timeout=4000, force=True)
+                    self.page.wait_for_selector("#seatSelect", state="visible", timeout=6000)
+                    modal_opened = True
+            except Exception as ex:
+                logger.warning(f"Native locator 选座按钮点击重试失败: {ex}")
+
+        # 4. If modal is visible, wait briefly for seat icons or coaches to be rendered
+        if modal_opened:
+            try:
+                self.page.wait_for_selector("#seatSelect .selectable-icon, #seatSelect .coache-btn, #seatSelect .cart", state="visible", timeout=4000)
+            except Exception:
+                pass
+            time.sleep(0.5)
+
+        return modal_opened
+
     def fetch_seats_layout(self, train_no: str, task: Optional[Any] = None, leg: str = "DEPART") -> Dict[str, Dict[str, List[str]]]:
         """
         Navigates to /Trip if not already present, clicks the Pick Seats button for train_no,
@@ -440,10 +546,13 @@ class KTMBrowserDriver:
         """
         self.dismiss_modals()
         try:
-            # 1. Ensure browser is on the /Trip page with rendered trips and matching passenger count / return_date
             target_count = len(task.passengers) if (task and getattr(task, "passengers", None)) else (getattr(task, "required_seats", 1) if task else 1)
             target_count = max(1, target_count)
             expected_ret = task.return_date if (task and getattr(task, "is_round_trip", False) and getattr(task, "return_date", None)) else None
+
+            tbody_cls = "tbody.return-trips" if leg.upper() == "RETURN" else "tbody.depart-trips"
+            raw_train = str(train_no or "").strip()
+            clean_train = re.sub(r"[^0-9]", "", raw_train)
 
             needs_search = False
             if "/Trip" not in (self.page.url or ""):
@@ -456,25 +565,33 @@ class KTMBrowserDriver:
                 needs_search = True
             elif task is not None and getattr(self, "_last_searched_pax", None) not in (None, target_count):
                 needs_search = True
-            elif task is not None:
+            else:
                 try:
-                    fixed_pax = self.page.evaluate("() => { const el = document.querySelector('#fixedPax'); return el ? parseInt(el.value || '0', 10) : 0; }")
-                    if isinstance(fixed_pax, int) and not isinstance(fixed_pax, bool) and fixed_pax > 0 and fixed_pax != target_count:
+                    train_in_table = self.page.evaluate(
+                        """({ tbodyCls, rawTrain, cleanTrain }) => {
+                            const tbody = document.querySelector(tbodyCls);
+                            if (!tbody) return false;
+                            const rows = Array.from(tbody.querySelectorAll('tr:not(.disabled)'));
+                            if (rows.length === 0) return false;
+                            if (!rawTrain && !cleanTrain) return rows.some(r => !!r.querySelector('.btn-seat-layout, [data-tripdata]'));
+                            return rows.some(r => {
+                                const t = (r.innerText || '').toUpperCase();
+                                const match = (rawTrain && t.includes(rawTrain.toUpperCase())) || (cleanTrain && t.replace(/[^0-9]/g, '').includes(cleanTrain));
+                                return match && !!r.querySelector('.btn-seat-layout, [data-tripdata], a, button');
+                            });
+                        }""",
+                        {"tbodyCls": tbody_cls, "rawTrain": raw_train, "cleanTrain": clean_train}
+                    )
+                    if train_in_table is False:
                         needs_search = True
                 except Exception:
                     pass
 
             if needs_search and task is not None:
-                logger.info(f"🧭 正在为订座将无头浏览器导航至 /Trip ({task.origin} -> {task.destination} on {task.date}, 返程: {expected_ret or '单程'}, 乘车人数: {target_count})...")
+                logger.info(f"🧭 正在为获取席位布局重新查询车次 /Trip ({task.origin} -> {task.destination} on {task.date}, 返程: {expected_ret or '单程'}, 乘车人数: {target_count})...")
                 self.navigate_to_booking()
                 self.fill_search_criteria(task)
                 self.trigger_search()
-
-            tbody_cls = "tbody.return-trips" if leg.upper() == "RETURN" else "tbody.depart-trips"
-            try:
-                self.page.wait_for_selector(f"{tbody_cls} tr:has-text('{train_no}') .btn-seat-layout, {tbody_cls} tr .btn-seat-layout", state="visible", timeout=15000)
-            except Exception:
-                pass
 
             self.dismiss_modals()
             if task is not None:
@@ -489,74 +606,49 @@ class KTMBrowserDriver:
                 except Exception:
                     pass
 
-            row = self.page.locator(f"{tbody_cls} tr:has-text('{train_no}')").first
-            if row.count() == 0:
-                row = self.page.locator(f"{tbody_cls} tr").first
-
-            btn = row.locator(".btn-seat-layout, button:has-text('Pick Seats'), a:has-text('Pick Seats'), a:has-text('Select')").first
-            if btn.count() > 0:
-                try:
-                    btn.scroll_into_view_if_needed(timeout=2000)
-                    btn.click(timeout=5000, force=True)
-                except Exception:
-                    btn.click(timeout=5000)
-            else:
-                try:
-                    self.page.locator(f"{tbody_cls} .btn-seat-layout[data-tripdata*='{train_no}']").first.click(timeout=5000, force=True)
-                except Exception:
-                    self.page.locator(f"{tbody_cls} .btn-seat-layout").first.click(timeout=5000)
-
-            self.page.wait_for_selector("#seatSelect", state="visible", timeout=12000)
-            time.sleep(1.0)
-
-            layout_data = self.page.evaluate("""
-                () => {
-                    const coaches = {};
-                    const coachBtns = document.querySelectorAll('#seatSelect .coache-btn');
-                    coachBtns.forEach(btn => {
-                        const lbl = btn.getAttribute('data-coach-label') || btn.innerText.trim();
-                        if (lbl) coaches[lbl] = { window: [], aisle: [] };
-                    });
-                    if (Object.keys(coaches).length === 0) {
-                        coaches['B'] = { window: [], aisle: [] };
-                    }
-
-                    const icons = document.querySelectorAll('#seatSelect .selectable-icon');
-                    icons.forEach(ic => {
-                        const isSelected = ic.getAttribute('data-selected') === 'true';
-                        if (isSelected) return;
-                        const cLbl = ic.getAttribute('data-coach-label') || 'B';
-                        const sNo = (ic.getAttribute('data-seat-no') || ic.getAttribute('title') || '').trim();
-                        if (!sNo) return;
-                        if (!coaches[cLbl]) coaches[cLbl] = { window: [], aisle: [] };
-
-                        if (sNo.endsWith('A') || sNo.endsWith('D')) {
-                            coaches[cLbl].window.push(sNo);
-                        } else {
-                            coaches[cLbl].aisle.push(sNo);
+            opened = self._open_seat_modal_for_trip(tbody_cls, train_no)
+            if opened:
+                layout_data = self.page.evaluate("""
+                    () => {
+                        const coaches = {};
+                        const coachBtns = document.querySelectorAll('#seatSelect .coache-btn');
+                        coachBtns.forEach(btn => {
+                            const lbl = btn.getAttribute('data-coach-label') || btn.innerText.trim();
+                            if (lbl) coaches[lbl] = { window: [], aisle: [] };
+                        });
+                        if (Object.keys(coaches).length === 0) {
+                            coaches['B'] = { window: [], aisle: [] };
                         }
-                    });
-                    return coaches;
-                }
-            """)
-            self._close_seat_modal()
-            if layout_data:
-                return layout_data
+
+                        const icons = document.querySelectorAll('#seatSelect .selectable-icon');
+                        icons.forEach(ic => {
+                            const isSelected = ic.getAttribute('data-selected') === 'true';
+                            if (isSelected) return;
+                            const cLbl = ic.getAttribute('data-coach-label') || 'B';
+                            const sNo = (ic.getAttribute('data-seat-no') || ic.getAttribute('title') || '').trim();
+                            if (!sNo) return;
+                            if (!coaches[cLbl]) coaches[cLbl] = { window: [], aisle: [] };
+
+                            if (sNo.endsWith('A') || sNo.endsWith('D')) {
+                                coaches[cLbl].window.push(sNo);
+                            } else {
+                                coaches[cLbl].aisle.push(sNo);
+                            }
+                        });
+                        return coaches;
+                    }
+                """)
+                self._close_seat_modal()
+                if isinstance(layout_data, dict):
+                    total_seats = sum(len(c.get("window", [])) + len(c.get("aisle", [])) for c in layout_data.values() if isinstance(c, dict))
+                    if total_seats > 0:
+                        return layout_data
         except Exception as e:
             logger.warning(f"获取车次 {train_no} 实时座舱布局时异常: {e}")
+            self._close_seat_modal()
 
         # Fallback layout
-        return {
-            "B": {
-                "window": ["03A", "03D", "04A", "04D", "05A", "05D"],
-                "aisle":  ["03B", "03C", "04B", "04C", "05B", "05C"]
-            },
-            "C": {
-                "window": ["02A", "02D", "06A", "06D"],
-                "aisle":  ["02B", "02C", "06B", "06C"]
-            }
-        }
-
+        return self._get_fallback_layout()
     def scrape_return_trips(self) -> List[TripInfo]:
         """
         Scrapes available return trips from tbody.return-trips on KITS /Trip page.
@@ -621,31 +713,40 @@ class KTMBrowserDriver:
     SESSION_EXPIRED_MARKER = "KITS_SESSION_EXPIRED"
 
     def _close_seat_modal(self) -> None:
-        """Closes #seatSelect (if open) without confirming, leaving /Trip in a clean state."""
+        """Safely hides #seatSelect (if open) without triggering KITS CancelBooking handler."""
         try:
-            if not self.page.locator("#seatSelect").is_visible():
-                return
             self.page.evaluate("""
                 () => {
-                    const btn = document.querySelector('#seatSelect .close, #seatSelect [data-dismiss="modal"], #seatSelect [data-bs-dismiss="modal"]');
-                    if (btn) btn.click();
+                    const modal = document.querySelector('#seatSelect');
+                    if (modal) {
+                        modal.classList.remove('show');
+                        modal.style.display = 'none';
+                    }
+                    document.querySelectorAll('.modal-backdrop').forEach(b => b.remove());
+                    if (window.jQuery && window.jQuery.fn && window.jQuery.fn.modal) {
+                        try { window.jQuery('#seatSelect').modal('hide'); } catch (e) {}
+                    }
                 }
             """)
-            self.page.wait_for_selector("#seatSelect", state="hidden", timeout=5000)
         except Exception:
             pass
 
     def _click_proceed_to_passenger(self) -> bool:
-        """Clicks the first *visible* PROCEED TO PASSENGER DETAILS button (hidden duplicates exist on /Trip)."""
+        """Clicks the official PROCEED TO PASSENGER DETAILS button."""
         try:
             clicked = self.page.evaluate("""
                 () => {
+                    const btn = document.querySelector('button.btn-passenger, #btnProceedPassenger, .proceed-btn');
+                    if (btn) {
+                        try { btn.scrollIntoView({block: 'center'}); } catch (e) {}
+                        btn.click();
+                        return true;
+                    }
                     const cands = Array.from(document.querySelectorAll('button, a, input[type=submit]'))
-                        .filter(b => /PROCEED TO PASSENGER/i.test(b.innerText || b.value || '') || b.classList.contains('btn-passenger'));
-                    const vis = cands.find(b => b.offsetParent !== null && !b.disabled) || cands[0];
-                    if (vis) {
-                        try { vis.scrollIntoView({block: 'center'}); } catch (e) {}
-                        vis.click();
+                        .filter(b => /PROCEED TO PASSENGER/i.test(b.innerText || b.value || ''));
+                    if (cands.length > 0) {
+                        try { cands[0].scrollIntoView({block: 'center'}); } catch (e) {}
+                        cands[0].click();
                         return true;
                     }
                     const form = document.querySelector('form[action*="/Book"], form#tripForm, form#formBook');
@@ -772,6 +873,8 @@ class KTMBrowserDriver:
             target_count = len(task.passengers) if (task and getattr(task, "passengers", None)) else (getattr(task, "required_seats", 1) if task else 1)
             target_count = max(1, target_count)
             expected_ret = task.return_date if (task and getattr(task, "return_date", None)) else None
+            raw_train = str(train_no or "").strip()
+            clean_train = re.sub(r"[^0-9]", "", raw_train)
 
             # 1. Ensure browser is on /Trip page and train table is rendered with matching passenger count & return_date
             needs_search = False
@@ -793,147 +896,50 @@ class KTMBrowserDriver:
                 except Exception:
                     pass
 
+            if not needs_search and (raw_train or clean_train):
+                try:
+                    train_in_table = self.page.evaluate(
+                        """({ rawTrain, cleanTrain }) => {
+                            const tbody = document.querySelector('tbody.depart-trips');
+                            if (!tbody) return false;
+                            const rows = Array.from(tbody.querySelectorAll('tr:not(.disabled)'));
+                            if (rows.length === 0) return false;
+                            return rows.some(r => {
+                                const t = (r.innerText || '').toUpperCase();
+                                return (rawTrain && t.includes(rawTrain.toUpperCase())) || (cleanTrain && t.replace(/[^0-9]/g, '').includes(cleanTrain));
+                            });
+                        }""",
+                        {"rawTrain": raw_train, "cleanTrain": clean_train}
+                    )
+                    if train_in_table is False:
+                        needs_search = True
+                except Exception:
+                    pass
+
             if needs_search and task is not None:
                 logger.info(f"🔄 正在按乘车人数 ({target_count} 人) 与返程日期 ({expected_ret or '单程'}) 重新查询车次并分配席位槽...")
                 self.navigate_to_booking()
                 self.fill_search_criteria(task)
                 self.trigger_search()
 
-            # 2. Ensure the seat selection modal is actually opened before waiting for it.
-            #    The #seatSelect element exists in the DOM but stays hidden until a
-            #    seat-selection trigger is clicked, so waiting for visibility alone times out.
-            try:
-                if not self.page.locator("#seatSelect").is_visible():
-                    opened = self.page.evaluate("""
-                        () => {
-                            const modal = document.querySelector('#seatSelect');
-                            if (!modal) return false;
-                            // Try common triggers that open the seat modal
-                            const triggers = Array.from(document.querySelectorAll(
-                                '[data-target="#seatSelect"], [data-bs-target="#seatSelect"], '
-                                + 'a[href="#seatSelect"], button.select-seat, .btn-select-seat, '
-                                + '[onclick*="seatSelect"], [data-toggle="modal"][data-target*="seat"]'
-                            )).filter(el => el.offsetParent !== null && !el.disabled);
-                            if (triggers.length) {
-                                triggers[0].scrollIntoView({block: 'center'});
-                                triggers[0].click();
-                                return true;
-                            }
-                            // Fallback: force-show the modal via Bootstrap/jQuery if available
-                            if (window.jQuery && window.jQuery.fn && window.jQuery.fn.modal) {
-                                window.jQuery('#seatSelect').modal('show');
-                                return true;
-                            }
-                            if (window.bootstrap && window.bootstrap.Modal) {
-                                window.bootstrap.Modal.getOrCreateInstance(modal).show();
-                                return true;
-                            }
-                            return false;
-                        }
-                    """)
-                    if opened:
-                        try:
-                            self.page.wait_for_selector("#seatSelect", state="visible", timeout=8000)
-                        except Exception:
-                            pass
-            except Exception as e:
-                logger.warning(f"尝试打开选座弹窗失败: {e}")
-
-            # 3. Dismiss any modal/cookie popups
             self.dismiss_modals()
+            self.dismiss_popup_alerts()
 
-            # 3. Open #seatSelect modal (and ensure cart slots match target_count)
-            seat_modal_visible = self.page.locator("#seatSelect").is_visible()
-            if seat_modal_visible and target_count > 1:
-                try:
-                    cart_rows = self.page.evaluate("() => document.querySelectorAll('#seatSelect .cart > tr').length")
-                    if isinstance(cart_rows, int) and not isinstance(cart_rows, bool) and 0 < cart_rows < target_count:
-                        self.page.evaluate("""(pax) => {
-                            const fp = document.querySelector('#fixedPax');
-                            if (fp) fp.value = String(pax);
-                            const closeBtn = document.querySelector('#seatSelect .close, #seatSelect [data-dismiss="modal"]');
-                            if (closeBtn) closeBtn.click();
-                        }""", target_count)
-                        time.sleep(0.5)
-                        seat_modal_visible = False
-                except Exception:
-                    pass
+            try:
+                self.page.evaluate("""(pax) => {
+                    const fp = document.querySelector('#fixedPax');
+                    if (fp) fp.value = String(pax);
+                }""", target_count)
+            except Exception:
+                pass
 
-            if not seat_modal_visible:
+            # 2. Open #seatSelect modal for outbound trip
+            seat_modal_opened = self._open_seat_modal_for_trip("tbody.depart-trips", train_no)
+            if not seat_modal_opened:
                 m_init = self.check_maintenance_modal()
                 if m_init:
                     raise RuntimeError(f"KTMB 官方系统维护中（每晚 23:00 - 00:15 例行维护，暂停订票与支付）：{m_init}")
-
-                self.dismiss_modals()
-                try:
-                    self.page.evaluate("""(pax) => {
-                        const fp = document.querySelector('#fixedPax');
-                        if (fp) fp.value = String(pax);
-                    }""", target_count)
-                except Exception:
-                    pass
-
-                # Ensure modal state is clean before opening
-                try:
-                    self.page.evaluate("""() => {
-                        const m = document.querySelector('#seatSelect');
-                        if (m && m.classList.contains('show')) {
-                            const closeBtn = m.querySelector('.close, [data-dismiss="modal"]');
-                            if (closeBtn) closeBtn.click();
-                        }
-                        document.querySelectorAll('.modal-backdrop').forEach(b => b.remove());
-                    }""")
-                    time.sleep(0.5)
-                except Exception:
-                    pass
-
-                # Locate row and button with robust fallbacks
-                btn_clicked = False
-                try:
-                    btn = self.page.locator(f"tbody.depart-trips tr:has-text('{train_no}') .btn-seat-layout, tbody.depart-trips tr:has-text('{train_no}') button:has-text('Pick Seats')").first
-                    if btn.count() == 0:
-                        btn = self.page.locator("tbody.depart-trips tr .btn-seat-layout, tbody.depart-trips tr button:has-text('Pick Seats')").first
-                    if btn.count() > 0:
-                        btn.scroll_into_view_if_needed(timeout=2000)
-                        btn.click(timeout=5000, force=True)
-                        btn_clicked = True
-                except Exception as ex:
-                    logger.warning(f"常规点击去程选座按钮失败，尝试 JS 原生触发: {ex}")
-
-                if not btn_clicked:
-                    try:
-                        self.page.evaluate(f"""(tNo) => {{
-                            const rows = Array.from(document.querySelectorAll('tbody.depart-trips tr'));
-                            let target = rows.find(r => r.innerText.includes(tNo)) || rows[0];
-                            if (target) {{
-                                const b = target.querySelector('.btn-seat-layout') || target.querySelector('button');
-                                if (b) b.click();
-                            }}
-                        }}""", train_no or "")
-                    except Exception:
-                        pass
-
-                try:
-                    self.page.wait_for_selector("#seatSelect", state="visible", timeout=12000)
-                except Exception:
-                    # Retry once via JS trigger if first click was missed or backdrop intercepted
-                    try:
-                        self.page.evaluate(f"""(tNo) => {{
-                            document.querySelectorAll('.modal-backdrop').forEach(b => b.remove());
-                            const rows = Array.from(document.querySelectorAll('tbody.depart-trips tr'));
-                            let target = rows.find(r => r.innerText.includes(tNo)) || rows[0];
-                            if (target) {{
-                                const b = target.querySelector('.btn-seat-layout') || target.querySelector('button');
-                                if (b) b.click();
-                            }}
-                        }}""", train_no or "")
-                        self.page.wait_for_selector("#seatSelect", state="visible", timeout=8000)
-                    except Exception:
-                        m_text = self.check_maintenance_modal()
-                        if m_text:
-                            raise RuntimeError(f"KTMB 官方系统维护中（每晚 23:00 - 00:15 例行维护，暂停订票与支付）：{m_text}")
-                        raise
-                time.sleep(1.0)
+                raise RuntimeError(f"未能打开车次 {train_no or 'AUTO'} 的去程选座窗口（可能车票已售罄）")
 
             # 4. Smart Seat Selection via DOM click (supports multiple passengers/seats)
             seat_select_js = """
@@ -1089,11 +1095,15 @@ class KTMBrowserDriver:
             except Exception:
                 pass
 
+            if not target_seat_no or target_seat_no.strip() == "-":
+                raise RuntimeError("未能选定车次可用席位（可能席位已售罄）")
+
             logger.info(f"💺 已选定座位: {target_seat_no} (席位数: {target_count}, 偏好/指定: {pref})")
 
             # 5. Confirm seat selection
+            self.dismiss_popup_alerts()
             try:
-                self.page.wait_for_selector("#confirmSeatBtn:not(.disabled-btn)", timeout=5000)
+                self.page.wait_for_selector("#confirmSeatBtn:not(.disabled-btn), #seatSelect button:has-text('CONFIRM SEATS')", timeout=5000)
             except Exception:
                 pass
 
@@ -1139,17 +1149,7 @@ class KTMBrowserDriver:
                 except Exception:
                     pass
 
-            if matched_ret_train:
-                return_row = self.page.locator(f"tbody.return-trips tr:not(.disabled):has-text('{matched_ret_train}')").first
-                if return_row.count() == 0:
-                    return_row = self.page.locator("tbody.return-trips tr:not(.disabled)").first
-            else:
-                return_row = self.page.locator("tbody.return-trips tr:not(.disabled)").first
-
-            return_btn = return_row.locator(".btn-seat-layout:not(.disabled)").first if return_row.count() > 0 else self.page.locator("tbody.return-trips tr:not(.disabled) .btn-seat-layout:not(.disabled)").first
-            if return_btn.count() == 0:
-                return_btn = self.page.locator("tbody.return-trips tr .btn-seat-layout").first
-            if return_btn.count() > 0:
+            if matched_ret_train or expected_ret or (self.page.locator("tbody.return-trips tr").count() > 0):
                 try:
                     ret_meta = self.page.evaluate(
                         """(targetTrain) => {
@@ -1175,108 +1175,91 @@ class KTMBrowserDriver:
                         }""",
                         matched_ret_train or ""
                     )
-                    if isinstance(ret_meta, dict):
+                    if isinstance(ret_meta, dict) and ret_meta:
                         self.last_return_trip_info = dict(ret_meta)
                 except Exception:
                     pass
 
-                logger.info(f"🔄 检测到往返双程（Round Trip），正在选取返程车次 ({self.last_return_trip_info.get('train_no', 'AUTO')} @ {self.last_return_trip_info.get('departure_time', '')}) 座位...")
-                try:
-                    return_btn.scroll_into_view_if_needed(timeout=2000)
-                except Exception:
-                    pass
-                return_btn.click(timeout=5000, force=True)
+                logger.info(f"🔄 检测到往返双程（Round Trip），正在选取返程车次 ({self.last_return_trip_info.get('train_no', matched_ret_train or 'AUTO')} @ {self.last_return_trip_info.get('departure_time', '')}) 座位...")
+                ret_modal_opened = self._open_seat_modal_for_trip("tbody.return-trips", matched_ret_train)
+                if ret_modal_opened:
+                    return_target_seat_no = self.page.evaluate(seat_select_js, {"pref": ret_pref, "targetCount": target_count})
 
-                self.page.wait_for_selector("#seatSelect", state="visible", timeout=12000)
-                try:
-                    self.page.wait_for_selector("#seatSelect .selectable-icon", state="visible", timeout=8000)
-                except Exception:
-                    pass
-                time.sleep(1.0)
-
-                return_target_seat_no = self.page.evaluate(seat_select_js, {"pref": ret_pref, "targetCount": target_count})
-
-                time.sleep(1.0)
-                try:
-                    return_table_seats = self.page.evaluate("""
-                        () => {
-                            const rows = Array.from(document.querySelectorAll('#seatSelect .cart tr.seat-row'));
-                            const items = [];
-                            for (const r of rows) {
-                                const cells = Array.from(r.querySelectorAll('td')).map(c => (c.innerText || '').trim());
-                                if (cells.length >= 4) {
-                                    const coach = cells[1];
-                                    const seat = cells[3];
-                                    if (seat && seat.toLowerCase() !== 'select seat' && seat !== '-') {
-                                        items.push(coach && coach !== '-' ? `Coach ${coach} - ${seat}` : seat);
+                    time.sleep(1.0)
+                    try:
+                        return_table_seats = self.page.evaluate("""
+                            () => {
+                                const rows = Array.from(document.querySelectorAll('#seatSelect .cart tr.seat-row'));
+                                const items = [];
+                                for (const r of rows) {
+                                    const cells = Array.from(r.querySelectorAll('td')).map(c => (c.innerText || '').trim());
+                                    if (cells.length >= 4) {
+                                        const coach = cells[1];
+                                        const seat = cells[3];
+                                        if (seat && seat.toLowerCase() !== 'select seat' && seat !== '-') {
+                                            items.push(coach && coach !== '-' ? `Coach ${coach} - ${seat}` : seat);
+                                        }
                                     }
                                 }
+                                return items.join(', ');
                             }
-                            return items.join(', ');
-                        }
-                    """)
-                    if isinstance(return_table_seats, str) and return_table_seats.strip():
-                        return_target_seat_no = return_table_seats.strip()
-                except Exception:
-                    pass
-
-                self.last_return_trip_info["selected_seat"] = return_target_seat_no
-                logger.info(f"💺 返程车次已选定座位: {return_target_seat_no}")
-
-                # Confirm return seat selection (match button by id, class or text)
-                self.dismiss_popup_alerts()
-                try:
-                    self.page.wait_for_selector("#confirmSeatBtn:not(.disabled-btn), #seatSelect button:has-text('CONFIRM SEATS')", timeout=5000)
-                except Exception:
-                    pass
-
-                confirm_clicked = False
-                try:
-                    c_btn = self.page.locator("#confirmSeatBtn:not(.disabled-btn), #seatSelect button:has-text('CONFIRM SEATS')").first
-                    if c_btn.count() > 0:
-                        c_btn.scroll_into_view_if_needed(timeout=2000)
-                        c_btn.click(timeout=5000, force=True)
-                        confirm_clicked = True
-                except Exception as ex:
-                    logger.warning(f"常规点击返程确认座位按钮失败，尝试 JS 原生触发: {ex}")
-
-                if not confirm_clicked:
-                    try:
-                        self.page.evaluate("""() => {
-                            const btn = document.querySelector('#confirmSeatBtn') || Array.from(document.querySelectorAll('#seatSelect button')).find(b => /CONFIRM SEATS/i.test(b.innerText || ''));
-                            if (btn) btn.click();
-                        }""")
+                        """)
+                        if isinstance(return_table_seats, str) and return_table_seats.strip():
+                            return_target_seat_no = return_table_seats.strip()
                     except Exception:
                         pass
 
-                time.sleep(2.0)
-                self.dismiss_popup_alerts()
-                try:
-                    self.page.wait_for_selector("#seatSelect", state="hidden", timeout=5000)
-                except Exception:
-                    # If still visible, clear any popup modal alert, retry confirm once, and ensure modal is dismissed
+                    self.last_return_trip_info["selected_seat"] = return_target_seat_no
+                    logger.info(f"💺 返程车次已选定座位: {return_target_seat_no}")
+
+                    # Confirm return seat selection (match button by id, class or text)
                     self.dismiss_popup_alerts()
                     try:
-                        self.page.evaluate("""() => {
-                            const btn = document.querySelector('#confirmSeatBtn') || Array.from(document.querySelectorAll('#seatSelect button')).find(b => /CONFIRM SEATS/i.test(b.innerText || ''));
-                            if (btn && !btn.disabled) btn.click();
-                        }""")
+                        self.page.wait_for_selector("#confirmSeatBtn:not(.disabled-btn), #seatSelect button:has-text('CONFIRM SEATS')", timeout=5000)
                     except Exception:
                         pass
-                    time.sleep(1.0)
-                    if self.page.locator("#seatSelect").is_visible():
-                        self._close_seat_modal()
+
+                    confirm_clicked = False
+                    try:
+                        c_btn = self.page.locator("#confirmSeatBtn:not(.disabled-btn), #seatSelect button:has-text('CONFIRM SEATS')").first
+                        if c_btn.count() > 0:
+                            c_btn.scroll_into_view_if_needed(timeout=2000)
+                            c_btn.click(timeout=5000, force=True)
+                            confirm_clicked = True
+                    except Exception as ex:
+                        logger.warning(f"常规点击返程确认座位按钮失败，尝试 JS 原生触发: {ex}")
+
+                    if not confirm_clicked:
+                        try:
+                            self.page.evaluate("""() => {
+                                const btn = document.querySelector('#confirmSeatBtn') || Array.from(document.querySelectorAll('#seatSelect button')).find(b => /CONFIRM SEATS/i.test(b.innerText || ''));
+                                if (btn) btn.click();
+                            }""")
+                        except Exception:
+                            pass
+
+                    time.sleep(2.0)
+                    self.dismiss_popup_alerts()
+                    try:
+                        self.page.wait_for_selector("#seatSelect", state="hidden", timeout=5000)
+                    except Exception:
+                        self.dismiss_popup_alerts()
+                        try:
+                            self.page.evaluate("""() => {
+                                const btn = document.querySelector('#confirmSeatBtn') || Array.from(document.querySelectorAll('#seatSelect button')).find(b => /CONFIRM SEATS/i.test(b.innerText || ''));
+                                if (btn && !btn.disabled) btn.click();
+                                const modal = document.querySelector('#seatSelect');
+                                if (modal) modal.classList.remove('show');
+                                document.querySelectorAll('.modal-backdrop').forEach(b => b.remove());
+                            }""")
+                        except Exception:
+                            pass
+                        time.sleep(1.0)
 
             # 6. Click PROCEED TO PASSENGER DETAILS
             # Dismiss any popup or stray backdrop first
             self.dismiss_popup_alerts()
             self.dismiss_modals()
-            if self.page.locator("#seatSelect").is_visible():
-                self._close_seat_modal()
-            try:
-                self.page.wait_for_selector("button:has-text('PROCEED TO PASSENGER DETAILS'), .btn-passenger", state="visible", timeout=6000)
-            except Exception:
-                pass
             self._click_proceed_to_passenger()
 
             try:
@@ -1307,7 +1290,7 @@ class KTMBrowserDriver:
                     book_page_seats = self.page.evaluate("""
                         () => {
                             const text = document.body ? document.body.innerText : '';
-                            const regex = /-\\s*([A-Z0-9]{1,3})\\s*\\/\\s*([0-9]{1,2}[A-Z])\\b/g;
+                            const regex = /-\s*([A-Z0-9]{1,3})\s*\/\s*([0-9]{1,2}[A-Z])\b/g;
                             const found = [];
                             let m;
                             while ((m = regex.exec(text)) !== null) {

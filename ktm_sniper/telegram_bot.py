@@ -921,7 +921,7 @@ class TelegramCommandHandler:
                 coach_pools.append((str(c_lbl).strip(), win_list, ais_list, all_sorted))
 
         if not coach_pools:
-            return ""
+            return "AUTO"
 
         chosen_idx = 0
         for idx, (_, _, _, all_sorted) in enumerate(coach_pools):
@@ -963,7 +963,7 @@ class TelegramCommandHandler:
                 if formatted not in selected:
                     selected.append(formatted)
 
-        return ", ".join(selected)
+        return ", ".join(selected) if selected else "AUTO"
 
     def _handle_seat(self, args: list) -> str:
         if not hasattr(self.engine, "selected_trip") or not self.engine.selected_trip:
@@ -1008,6 +1008,8 @@ class TelegramCommandHandler:
 
         if return_seat_choice and return_seat_choice != "AUTO":
             self.engine.selected_return_seat = return_seat_choice
+        outbound_seat_choice = (outbound_seat_choice or "AUTO").strip() or "AUTO"
+        return_seat_choice = (return_seat_choice or "AUTO").strip() or "AUTO"
 
         trip = self.engine.selected_trip
         passengers = list(self.engine.task.passengers or [])

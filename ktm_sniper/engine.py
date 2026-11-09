@@ -70,7 +70,7 @@ class KTMSniperEngine:
         self.available_return_seats_cache: Dict[str, Any] = {}
         self.require_confirmation: bool = getattr(task, "require_confirmation", False)
 
-    def run_in_browser_thread(self, fn, *args, timeout: float = 60.0, **kwargs):
+    def run_in_browser_thread(self, fn, *args, timeout: float = 120.0, **kwargs):
         """
         Executes a callable on the main thread where Playwright was initialized,
         preventing greenlet 'Cannot switch to a different thread' errors when called
@@ -115,7 +115,7 @@ class KTMSniperEngine:
 
     def fetch_seats_layout(self, train_no: str) -> Dict[str, Dict[str, List[str]]]:
         if self.browser_driver:
-            return self.run_in_browser_thread(self._fetch_seats_layout_sync, train_no)
+            return self.run_in_browser_thread(self._fetch_seats_layout_sync, train_no, timeout=120.0)
         return self._get_fallback_seats_layout()
 
     def _fetch_seats_layout_sync(self, train_no: str) -> Dict[str, Dict[str, List[str]]]:
@@ -125,7 +125,7 @@ class KTMSniperEngine:
 
     def fetch_return_seats_layout(self, train_no: str) -> Dict[str, Dict[str, List[str]]]:
         if self.browser_driver:
-            return self.run_in_browser_thread(self._fetch_return_seats_layout_sync, train_no)
+            return self.run_in_browser_thread(self._fetch_return_seats_layout_sync, train_no, timeout=120.0)
         return self._get_fallback_seats_layout()
 
     def _fetch_return_seats_layout_sync(self, train_no: str) -> Dict[str, Dict[str, List[str]]]:
@@ -146,7 +146,7 @@ class KTMSniperEngine:
         }
 
     def execute_real_booking(self, trip: Any, seat_no: str = "auto", return_seat_no: Optional[str] = None) -> Dict[str, Any]:
-        return self.run_in_browser_thread(self._execute_real_booking_sync, trip, seat_no, return_seat_no)
+        return self.run_in_browser_thread(self._execute_real_booking_sync, trip, seat_no, return_seat_no, timeout=180.0)
 
     def _execute_real_booking_sync(self, trip: Any, seat_no: str = "auto", return_seat_no: Optional[str] = None) -> Dict[str, Any]:
         train_no = getattr(trip, "train_no", trip.get("train_no") if isinstance(trip, dict) else "9044")

@@ -223,3 +223,47 @@ def test_dismiss_popup_alerts_and_ensure_on_book_page_recovery():
     # Should not raise because retry succeeds into /Book
     driver._ensure_on_book_page(max_retries=1)
     driver._click_proceed_to_passenger.assert_called()
+
+
+def test_open_seat_modal_for_trip_js_and_locator_fallback():
+    mock_page = MagicMock()
+    # 1. First test: JS trigger opens modal
+    mock_page.evaluate.return_value = True
+    driver = KTMBrowserDriver(page=mock_page)
+
+    opened = driver._open_seat_modal_for_trip('tbody.depart-trips', '9044')
+    assert opened is True
+
+    # 2. Second test: JS fails, locator fallback succeeds
+    mock_page.evaluate.side_effect = [False, False]
+    loc = MagicMock()
+    loc.count.return_value = 1
+    mock_page.locator.return_value = loc
+    loc.first = loc
+
+    opened_fallback = driver._open_seat_modal_for_trip('tbody.depart-trips', '9044')
+    assert opened_fallback is True
+    loc.click.assert_called()
+
+
+def test_fetch_seats_layout_success_and_fallback():
+    mock_page = MagicMock()
+    mock_page.url = 'https://online.ktmb.com.my/Trip'
+    driver = KTMBrowserDriver(page=mock_page)
+    driver._open_seat_modal_for_trip = MagicMock(return_value=True)
+
+    # Mock evaluate returning extracted layout with seats
+    mock_page.evaluate.return_value = {
+        'B': {'window': ['03A', '03D'], 'aisle': ['03B', '03C']},
+        'C': {'window': ['02A'], 'aisle': ['02B']}
+    }
+
+    layout = driver.fetch_seats_layout('9044')
+    assert 'B' in layout
+    assert '03A' in layout['B']['window']
+
+    # When modal fails to open, returns fallback layout
+    driver._open_seat_modal_for_trip.return_value = False
+    fallback = driver.fetch_seats_layout('9044')
+    assert 'B' in fallback
+    assert len(fallback['B']['window']) > 0
