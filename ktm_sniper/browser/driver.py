@@ -494,19 +494,48 @@ class KTMBrowserDriver:
                 row = self.page.locator(f"{tbody_cls} tr").first
 
             btn = row.locator(".btn-seat-layout, button:has-text('Pick Seats'), a:has-text('Pick Seats'), a:has-text('Select')").first
+            clicked = False
             if btn.count() > 0:
                 try:
                     btn.scroll_into_view_if_needed(timeout=2000)
                     btn.click(timeout=5000, force=True)
+                    clicked = True
                 except Exception:
-                    btn.click(timeout=5000)
-            else:
+                    try:
+                        btn.click(timeout=5000)
+                        clicked = True
+                    except Exception:
+                        clicked = False
+            if not clicked:
                 try:
                     self.page.locator(f"{tbody_cls} .btn-seat-layout[data-tripdata*='{train_no}']").first.click(timeout=5000, force=True)
+                    clicked = True
                 except Exception:
-                    self.page.locator(f"{tbody_cls} .btn-seat-layout").first.click(timeout=5000)
+                    try:
+                        self.page.locator(f"{tbody_cls} .btn-seat-layout").first.click(timeout=5000)
+                        clicked = True
+                    except Exception:
+                        clicked = False
+            if not clicked:
+                # Last-resort: click via JS on any visible seat-layout button in the target tbody
+                try:
+                    self.page.evaluate(
+                        """(sel) => {
+                            const btns = Array.from(document.querySelectorAll(sel + ' .btn-seat-layout'));
+                            const vis = btns.find(b => b.offsetParent !== null && !b.disabled);
+                            if (vis) { vis.scrollIntoView({block:'center'}); vis.click(); return true; }
+                            return false;
+                        }""",
+                        tbody_cls,
+                    )
+                except Exception:
+                    pass
 
-            self.page.wait_for_selector("#seatSelect", state="visible", timeout=12000)
+            try:
+                self.page.wait_for_selector("#seatSelect", state="visible", timeout=12000)
+            except Exception:
+                logger.warning(f"车次 {train_no} 座舱弹窗未出现，跳过实时布局抓取")
+                return None
             time.sleep(1.0)
 
             layout_data = self.page.evaluate("""
