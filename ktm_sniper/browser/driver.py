@@ -1424,29 +1424,34 @@ class KTMBrowserDriver:
                     if (!matched) {
                         const sec = document.querySelectorAll('.passenger-section')[idx];
                         if (sec) {
+                            const setVal = (el, val) => {
+                                if (!el) return;
+                                el.removeAttribute('disabled');
+                                el.removeAttribute('readonly');
+                                el.value = val;
+                                if (window.jQuery) {
+                                    window.jQuery(el).val(val).trigger('change').trigger('blur');
+                                } else {
+                                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                                }
+                            };
                             const nameInput = sec.querySelector('input.FullName, #Passengers_' + idx + '__FullName');
-                            if (nameInput) {
-                                nameInput.removeAttribute('disabled');
-                                nameInput.removeAttribute('readonly');
-                                nameInput.value = p.name;
-                            }
+                            setVal(nameInput, p.name);
                             const idInput = sec.querySelector('input.IdentityNo, #Passengers_' + idx + '__IdentityNo');
-                            if (idInput) {
-                                idInput.removeAttribute('disabled');
-                                idInput.removeAttribute('readonly');
-                                idInput.value = p.id;
-                            }
+                            setVal(idInput, p.id);
                             const phoneInput = sec.querySelector('input.ContactNo, #Passengers_' + idx + '__ContactNo');
-                            if (phoneInput) {
-                                phoneInput.removeAttribute('disabled');
-                                phoneInput.removeAttribute('readonly');
-                                phoneInput.value = p.phone;
-                            }
+                            setVal(phoneInput, p.phone);
                             const isFemale = (p.gender || '').toLowerCase().startsWith('f');
                             const gMale = sec.querySelector('#Passengers_' + idx + '__GenderMale, input.Gender[value="Male"], input.Gender[value="M"]');
                             const gFemale = sec.querySelector('#Passengers_' + idx + '__GenderFemale, input.Gender[value="Female"], input.Gender[value="F"]');
-                            if (isFemale && gFemale) { gFemale.checked = true; }
-                            else if (gMale) { gMale.checked = true; }
+                            if (isFemale && gFemale) {
+                                gFemale.checked = true;
+                                if (window.jQuery) window.jQuery(gFemale).trigger('change');
+                            } else if (gMale) {
+                                gMale.checked = true;
+                                if (window.jQuery) window.jQuery(gMale).trigger('change');
+                            }
                             actions.push(`Passenger ${idx} manually filled`);
                         }
                     }
