@@ -619,7 +619,6 @@ class KTMBrowserDriver:
                         if (Object.keys(coaches).length === 0) {
                             coaches['B'] = { window: [], aisle: [] };
                         }
-                        }
 
                         const icons = document.querySelectorAll('#seatSelect .selectable-icon');
                         icons.forEach(ic => {
