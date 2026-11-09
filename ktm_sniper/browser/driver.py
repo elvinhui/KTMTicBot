@@ -1563,32 +1563,30 @@ class KTMBrowserDriver:
             }""", pax_payload)
             logger.info(f"📝 乘车人表单提交执行状态: {fill_result}")
 
-            # 3. Wait for page transition away from /Book to insurance or payment
+            # 3. Wait for page transition away from passenger form (to insurance, payment, or off /Book)
             try:
-                self.page.wait_for_url(lambda u: "/Book" not in u or "Payment" in u or "Checkout" in u, timeout=20000)
+                self.page.wait_for_function("""() => {
+                    const onPax = !!document.querySelector('#Passengers_0__FullName, input.FullName');
+                    const onIns = !!document.querySelector('#btnUpdateInsuranceNo, #btnUpdateInsuranceYes');
+                    const onPay = !!document.querySelector('#btnGoPaymentDuitNow, #btnGoPaymentRazer') || (document.title || '').includes('Payment');
+                    return !onPax || onIns || onPay;
+                }""", timeout=25000)
             except Exception:
                 pass
 
-            # If still on /Book, try clicking #btnConfirmPayment as a fallback
-            # (UpdatePassenger may only validate the form without navigating)
-            if "/Book" in (self.page.url or ""):
-                try:
-                    fallback_btn = self.page.locator("#btnConfirmPayment").first
-                    if fallback_btn.count() > 0 and fallback_btn.is_visible():
-                        logger.info("📝 UpdatePassenger 未触发跳转，尝试点击 #btnConfirmPayment 作为后备...")
-                        try:
-                            fallback_btn.click(timeout=5000)
-                        except Exception:
-                            fallback_btn.evaluate("el => el.click()")
-                        try:
-                            self.page.wait_for_url(lambda u: "/Book" not in u or "Payment" in u or "Checkout" in u, timeout=15000)
-                        except Exception:
-                            pass
-                except Exception as fb_err:
-                    logger.warning(f"后备 #btnConfirmPayment 点击失败: {fb_err}")
+            # If still stuck on passenger fields, check if UpdatePassenger was rejected by KITS
+            is_stuck_on_pax = False
+            try:
+                is_stuck_on_pax = self.page.evaluate("""() => {
+                    const hasPaxFields = !!document.querySelector('#Passengers_0__FullName, input.FullName');
+                    const hasInsurance = !!document.querySelector('#btnUpdateInsuranceNo, #btnUpdateInsuranceYes');
+                    const hasPayment = !!document.querySelector('#btnGoPaymentDuitNow, #btnGoPaymentRazer') || (document.title || '').includes('Payment');
+                    return hasPaxFields && !hasInsurance && !hasPayment;
+                }""")
+            except Exception:
+                pass
 
-            # If still on /Book, check if UpdatePassenger was rejected by KITS
-            if "/Book" in (self.page.url or ""):
+            if is_stuck_on_pax is True:
                 alert_text = self._collect_page_alert_text()
                 pax_res = None
                 try:
@@ -1599,7 +1597,7 @@ class KTMBrowserDriver:
                 if pax_res and isinstance(pax_res, dict) and not pax_res.get("status"):
                     msg = ", ".join(pax_res.get("messages") or [])
                 err_detail = msg or alert_text or "乘车人页面提交超时（可能数据校验未通过或座位已失效）"
-                logger.error(f"❌ 乘车人表单提交后未能推进到支付页面: {err_detail}")
+                logger.error(f"❌ 乘车人表单提交后未能推进到后续流程: {err_detail}")
                 raise RuntimeError(f"乘车人表单提交失败: {err_detail}")
 
             # Step 2: Handle Takaful Insurance page
@@ -1623,13 +1621,13 @@ class KTMBrowserDriver:
                     pass
 
             # Only match specific insurance button
+            takaful_btn_sel = "#btnUpdateInsuranceYes" if include_insurance else "#btnUpdateInsuranceNo"
             try:
-                takaful_btn_sel = "#btnUpdateInsuranceYes" if include_insurance else "#btnUpdateInsuranceNo"
-                self.page.wait_for_selector(f"{takaful_btn_sel}, #btnUpdateInsuranceYes, #btnUpdateInsuranceNo", timeout=4000)
+                self.page.wait_for_selector(takaful_btn_sel, timeout=6000)
             except Exception:
                 pass
 
-            takaful_proceed = self.page.locator("#btnUpdateInsuranceYes, #btnUpdateInsuranceNo").first
+            takaful_proceed = self.page.locator(takaful_btn_sel).first
             if takaful_proceed.count() > 0 and takaful_proceed.is_visible():
                 logger.info(f"🛡️ 正在处理 Takaful 保险确认 (购买保险={include_insurance})...")
                 try:
@@ -1638,7 +1636,21 @@ class KTMBrowserDriver:
                     takaful_proceed.evaluate("el => el.click()")
                 time.sleep(1.5)
 
-            for _ in range(6):
+            # Handle insurance decline confirmation modal ("Are you sure you don’t want to purchase Takaful?")
+            if not include_insurance:
+                self.page.evaluate("""() => {
+                    const modal = document.querySelector('#popupModal.show, .modal.show');
+                    if (!modal) return;
+                    const btns = Array.from(modal.querySelectorAll('button, a.btn'));
+                    const target = btns.find(b => {
+                        const txt = (b.innerText || '').trim();
+                        return txt.includes('Yes') || txt.includes('don’t want') || txt.includes('OK');
+                    });
+                    if (target) target.click();
+                }""")
+                time.sleep(1.5)
+
+            for _ in range(3):
                 takaful_confirm = self.page.locator(
                     "button:has-text('purchase Takaful'), "
                     "a:has-text('purchase Takaful'), "
@@ -1653,7 +1665,7 @@ class KTMBrowserDriver:
                             takaful_confirm.click(timeout=3000, force=True)
                         except Exception:
                             pass
-                    time.sleep(2.0)
+                    time.sleep(1.5)
                     break
                 popup_close = self.page.locator("#popupModal.show #popupModalCloseButton").first
                 if popup_close.count() > 0 and popup_close.is_visible():
@@ -1861,31 +1873,47 @@ class KTMBrowserDriver:
                     """)
                     logger.info(f"💳 确认提交支付按钮触发状态: {submitted}")
 
-                    # 4.3 Wait for payment gateway / countdown page to load
+                    # 4.2 Wait for payment gateway / countdown page to load
                     time.sleep(2.0)
                     try:
                         self.page.wait_for_load_state("domcontentloaded", timeout=10000)
                     except Exception:
                         pass
 
-                    # Extract payment URL from parent page variable window._paymentUrl if present
+                    # 4.3 Look for #PaymentGateway ("Click HERE to proceed to payment gateway") and open gateway
+                    gateway_page = None
+                    try:
+                        self.page.wait_for_selector("#PaymentGateway, input[value*='payment gateway']", timeout=12000)
+                    except Exception:
+                        pass
+
+                    gw_btn = self.page.locator("#PaymentGateway, input[value*='payment gateway']").first
+                    if gw_btn.count() > 0 and gw_btn.is_visible():
+                        logger.info("🌐 检测到支付网关跳转按钮 [#PaymentGateway]，正在点击并等待弹窗...")
+                        try:
+                            with self.page.expect_popup(timeout=15000) as popup_info:
+                                gw_btn.click()
+                            gateway_page = popup_info.value
+                        except Exception as e:
+                            logger.info(f"点击 #PaymentGateway 弹窗捕获: {e}")
+
+                    # Find or open the gateway page (KTMB opens Fiuu / Razer in a popup tab)
+                    if not gateway_page:
+                        for p in self.page.context.pages:
+                            if p != self.page and ("fiuu.com" in p.url or "pay" in p.url or "GoPayment" in p.url):
+                                gateway_page = p
+                                break
+
+                    if not gateway_page and len(self.page.context.pages) > 1:
+                        gateway_page = self.page.context.pages[-1]
+
+                    # If popup wasn't automatically opened, open it explicitly using _paymentUrl
                     payment_url_js = None
                     try:
                         payment_url_js = self.page.evaluate("() => window._paymentUrl || null")
                     except Exception:
                         pass
 
-                    # Find or open the gateway page (KTMB opens Fiuu / Razer in a popup tab)
-                    gateway_page = None
-                    for p in self.page.context.pages:
-                        if p != self.page and ("fiuu.com" in p.url or "pay" in p.url or "GoPayment" in p.url):
-                            gateway_page = p
-                            break
-
-                    if not gateway_page and len(self.page.context.pages) > 1:
-                        gateway_page = self.page.context.pages[-1]
-
-                    # If popup wasn't automatically opened, open it explicitly using _paymentUrl
                     if not gateway_page and payment_url_js:
                         try:
                             full_url = f"{self.base_url}{payment_url_js}" if payment_url_js.startswith("/") else payment_url_js
